@@ -132,7 +132,10 @@ def load_manifest(manifest_path: Path) -> list[dict[str, Any]]:
             or duration <= 0
         ):
             raise ValueError(f"case_{index}_duration_invalid")
-        resolved_audio = (manifest_path.parent / audio_path).resolve()
+        manifest_dir = manifest_path.parent.resolve()
+        resolved_audio = (manifest_dir / audio_path).resolve()
+        if not resolved_audio.is_relative_to(manifest_dir):
+            raise ValueError(f"case_{index}_audio_path_outside_manifest_directory")
         if not resolved_audio.is_file():
             raise ValueError(f"case_{index}_audio_file_missing")
         tags = case.get("matrix_tags", [])

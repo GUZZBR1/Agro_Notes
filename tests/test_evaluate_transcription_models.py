@@ -82,6 +82,27 @@ def test_manifest_requires_cases_and_existing_audio(tmp_path: Path):
     assert len(load_manifest(manifest_path)) == 1
 
 
+@pytest.mark.parametrize("audio_path", ["../outside.ogg", "/etc/hosts"])
+def test_manifest_rejects_audio_paths_outside_manifest_directory(tmp_path: Path, audio_path: str):
+    manifest_dir = tmp_path / "manifest"
+    manifest_dir.mkdir()
+    (tmp_path / "outside.ogg").write_bytes(b"audio")
+    manifest_path = manifest_dir / "manifest.json"
+    manifest_path.write_text(
+        json.dumps([{
+            "id": "case-1",
+            "audio_path": audio_path,
+            "reference_text": "A 184 pesou 512 quilos.",
+            "critical_terms": ["184", "512"],
+            "duration_seconds": 4,
+        }]),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="audio_path_outside_manifest_directory"):
+        load_manifest(manifest_path)
+
+
 @pytest.mark.parametrize(
     ("field", "value", "reason"),
     [
