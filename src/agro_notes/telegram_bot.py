@@ -11,8 +11,9 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from .provider_factory import build_transcriber
 from .settings import Settings
-from .transcription import OpenAITranscriber, Transcriber
+from .transcription import Transcriber
 
 logger = logging.getLogger(__name__)
 
@@ -103,8 +104,10 @@ def build_router(processor: Processor, settings: Settings, transcriber: Transcri
 
     @router.shutdown()
     async def close_transcriber() -> None:
-        if owns_transcriber and isinstance(transcriber, OpenAITranscriber):
-            await transcriber.close()
+        if owns_transcriber and transcriber is not None:
+            close = getattr(transcriber, "close", None)
+            if close:
+                await close()
 
     async def reply(message: Message, user_id: int, result: BotReply) -> None:
         markup = None
@@ -178,8 +181,9 @@ def build_router(processor: Processor, settings: Settings, transcriber: Transcri
                 audio = await download_voice(bot, message, settings.voice_max_bytes)
                 failure_code = "TRANSCRIPTION_FAILED"
                 if transcriber is None:
-                    transcriber = OpenAITranscriber(settings)
-                text = await transcriber.transcribe(audio)
+                    transcriber = build_transcriber(settings)
+                transcription = await transcriber.transcribe(audio)
+                text = transcription.text if hasattr(transcription, "text") else transcription
                 del audio
                 if not text.strip():
                     response_text = "Não consegui entender o áudio. Envie novamente ou escreva a mensagem."

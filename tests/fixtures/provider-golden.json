@@ -1,0 +1,10 @@
+[
+  {"id":"1_WEIGHING","text":"A 184 pesou 512 kg hoje.","event_type":"WEIGHING","required_payload":{"animal_identifier":"184","weight_kg":512}},
+  {"id":"2_HEALTH","text":"A 184 está mancando.","event_type":"HEALTH_OBSERVATION","required_payload":{"animal_identifier":"184"}},
+  {"id":"3_TRANSFER","text":"Passei a 184 para o lote 7.","event_type":"LOT_TRANSFER","required_payload":{"animal_identifier":"184","to_group_identifier":"7"}},
+  {"id":"4_VACCINATION","text":"Vacinei a 184 contra clostridiose.","event_type":"VACCINATION","required_payload":{"animal_identifier":"184","vaccine":"clostridiose"}},
+  {"id":"5_CALVING","text":"A 184 pariu uma fêmea número 391.","event_type":"CALVING","required_payload":{"mother_identifier":"184"}},
+  {"id":"6_CLARIFICATION","text":"Pesei a 184.","event_type":"WEIGHING","required_payload":{"animal_identifier":"184"},"must_be_ambiguous":true},
+  {"id":"7_DUPLICATE","text":"A 184 pesou 512 kg hoje.","event_type":"WEIGHING","required_payload":{"animal_identifier":"184","weight_kg":512},"idempotency_is_application_test":true},
+  {"id":"8_UNSUPPORTED","text":"Qual tratamento veterinário devo dar à vaca 184?","event_type":null,"required_payload":{},"must_be_out_of_scope":true}
+]

@@ -6,19 +6,19 @@ MVP de captura de eventos de manejo animal por Telegram, com interpretação est
 
 - Python 3.11 ou superior
 - Token de bot Telegram e ID(s) numéricos autorizados
-- Chave OpenAI
+- Chave Groq (provider inicial) ou OpenAI
 - Planilha Google compartilhada com o e-mail da service account
 - JSON de credenciais da service account salvo localmente
 
 ## Configuração
 
 1. Crie e ative um ambiente virtual; instale `pip install -e .`. Para desenvolvimento, use `pip install -e '.[dev]'`.
-2. Copie `.env.example` para `.env` e preencha os segredos e `GOOGLE_SHEET_ID`. `TELEGRAM_ALLOWED_USER_IDS` aceita IDs separados por vírgulas.
+2. Copie `.env.example` para `.env` e preencha os segredos e `GOOGLE_SHEET_ID`. `TELEGRAM_ALLOWED_USER_IDS` aceita IDs separados por vírgulas. Groq é o provider inicial para interpretação e transcrição; defina `AI_PROVIDER` e `TRANSCRIPTION_PROVIDER` independentemente como `groq` ou `openai` para selecionar cada integração. Os modelos padrão Groq são `openai/gpt-oss-20b` e `whisper-large-v3-turbo`; ambos são configuráveis.
 3. Coloque o JSON de service account no caminho de `GOOGLE_CREDENTIALS_FILE`; compartilhe a planilha com o e-mail `client_email` do JSON, com permissão de editor.
 4. Inicie com `uvicorn agro_notes.main:app --host 0.0.0.0 --port 8000 --workers 1`. A inicialização cria abas vazias e cabeçalhos ausentes; ela para se encontrar cabeçalhos incompatíveis.
-5. Garanta saída HTTPS para Telegram, Google APIs e OpenAI. Long polling não exige webhook público; o processo precisa permanecer ativo.
+5. Garanta saída HTTPS para Telegram, Google APIs e o provider de IA escolhido. Long polling não exige webhook público; o processo precisa permanecer ativo.
 
-O processo deve ter **um único worker**: o bloqueio de escrita é local ao processo, e o Google Sheets não oferece transação nem restrição única. `GET /health` retorna `503` se o polling do Telegram estiver parado. O endpoint não valida a saúde posterior da planilha ou da API OpenAI.
+O processo deve ter **um único worker**: o bloqueio de escrita é local ao processo, e o Google Sheets não oferece transação nem restrição única. `GET /health` retorna `503` se o polling do Telegram estiver parado. O endpoint não valida a saúde posterior da planilha ou do provider de IA.
 
 ## Fluxo
 
@@ -31,6 +31,10 @@ Escopo: nascimento/cadastro, entrada, parto, pesagem, transferência de lote, va
 ## Métricas
 
 Com a planilha configurada, execute `agro-notes-metrics` para gerar um snapshot JSON de esclarecimentos, correções, duplicações, efeitos parciais/revertidos, consultas ao histórico e tempo até gravação. Acurácia de intenção, slots, resolução de animal e utilidade de esclarecimento ficam `null` até haver anotações humanas do golden set; os números são descritivos e não definem gates arbitrários.
+
+Para comparar explicitamente modelos Groq com prompts sintéticos, configure `GROQ_API_KEY` e execute `python -m agro_notes.evaluate_models [modelo ...]` dentro do ambiente instalado. Sem chave, o comando informa `WAITING_FOR_EXTERNAL_CREDENTIALS` e não chama serviços. O caso de duplicidade é avaliado pela suíte de integração local, pois idempotência pertence ao app e não ao modelo.
+
+A integração usa a [API OpenAI-compatible da Groq](https://console.groq.com/docs/openai), a [API Groq Speech to Text](https://console.groq.com/docs/speech-to-text) e o conjunto documentado de [Structured Outputs](https://console.groq.com/docs/structured-outputs).
 
 ## Limitações operacionais
 

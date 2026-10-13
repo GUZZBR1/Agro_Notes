@@ -10,12 +10,10 @@ from aiogram import Bot, Dispatcher
 from fastapi import FastAPI, HTTPException
 
 from .application import MVPProcessor
-from .interpreter import StructuredOutputInterpreter
-from .llm import OpenAIResponsesClient
+from .provider_factory import build_interpreter, build_transcriber
 from .settings import get_settings
 from .sheets import GoogleSheetsStore
 from .telegram_bot import build_router
-from .transcription import OpenAITranscriber
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -26,21 +24,23 @@ async def lifespan(app: FastAPI):
     settings.validate_runtime()
     store = GoogleSheetsStore.from_credentials(settings)
     await asyncio.to_thread(store.bootstrap)
-    responses_client = None
     transcriber = None
+    interpreter = None
     bot = None
     dispatcher = None
     polling = None
     try:
-        responses_client = OpenAIResponsesClient(settings)
-        transcriber = OpenAITranscriber(settings)
-        processor = MVPProcessor(settings, store, StructuredOutputInterpreter(responses_client))
+        interpreter = build_interpreter(settings)
+        processor = MVPProcessor(settings, store, interpreter)
+        transcriber = build_transcriber(settings)
         dispatcher = Dispatcher()
         dispatcher.include_router(build_router(processor, settings, transcriber))
         bot = Bot(settings.telegram_bot_token)
         polling = asyncio.create_task(dispatcher.start_polling(bot))
         app.state.store = store
         app.state.processor = processor
+        app.state.ai_provider = settings.ai_provider
+        app.state.transcription_provider = settings.transcription_provider
         app.state.polling_task = polling
         yield
     finally:
@@ -63,12 +63,12 @@ async def lifespan(app: FastAPI):
             try:
                 await transcriber.close()
             except Exception as exc:
-                logger.error("OpenAI transcription client close failed (%s)", type(exc).__name__)
-        if responses_client:
+                logger.error("Transcription client close failed (%s)", type(exc).__name__)
+        if interpreter:
             try:
-                responses_client.close()
+                interpreter.close()
             except Exception as exc:
-                logger.error("OpenAI responses client close failed (%s)", type(exc).__name__)
+                logger.error("Interpretation client close failed (%s)", type(exc).__name__)
 
 
 app = FastAPI(title="Agro Notes MVP", lifespan=lifespan)

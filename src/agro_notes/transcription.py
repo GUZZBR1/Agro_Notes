@@ -4,11 +4,12 @@ from typing import Any, Protocol
 
 from openai import AsyncOpenAI
 
+from .provider_contracts import TranscriptionResult
 from .settings import Settings
 
 
 class Transcriber(Protocol):
-    async def transcribe(self, audio: bytes) -> str: ...
+    async def transcribe(self, audio: bytes) -> str | TranscriptionResult: ...
 
 
 class OpenAITranscriber:

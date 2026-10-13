@@ -30,6 +30,11 @@ class StructuredOutputInterpreter:
     def __init__(self, client: StructuredOutputClient):
         self.client = client
 
+    def close(self) -> None:
+        close = getattr(self.client, "close", None)
+        if close is not None:
+            close()
+
     def interpret(self, text: str) -> InterpretationProposal:
         if not text.strip():
             return InterpretationProposal(ambiguities=["Informe o evento a registrar."])
@@ -39,3 +44,19 @@ class StructuredOutputInterpreter:
         if isinstance(output, str):
             return InterpretationProposal.model_validate_json(output)
         return InterpretationProposal.model_validate(output)
+
+
+class ProviderInterpreter:
+    """Adapt provider-neutral interpretation results to the app's domain seam."""
+
+    def __init__(self, provider: Any):
+        self.provider = provider
+
+    def interpret(self, text: str) -> InterpretationProposal:
+        result = self.provider.interpret(text)
+        return result.proposal
+
+    def close(self) -> None:
+        close = getattr(self.provider, "close", None)
+        if close is not None:
+            close()
