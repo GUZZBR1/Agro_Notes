@@ -5,6 +5,7 @@ from unittest.mock import ANY, AsyncMock
 import pytest
 from aiogram.types import Chat, Message, User
 
+from agro_notes.exports import ExportDocument
 from agro_notes.settings import Settings
 from agro_notes.telegram_bot import (
     BotReply,
@@ -30,7 +31,12 @@ def message(user_id=42, text="nasceram dois bezerros", voice=None):
         text=text,
         voice=voice,
         answer=AsyncMock(return_value=SimpleNamespace(chat=SimpleNamespace(id=100), message_id=20)),
+        answer_document=AsyncMock(),
     )
+
+
+def message_handler(router, name):
+    return next(handler.callback for handler in router.message.handlers if handler.callback.__name__ == name)
 
 
 def processor():
@@ -194,3 +200,110 @@ async def test_openai_transcription_uses_memory_and_portuguese():
     assert result.metadata.outcome.value == "SUCCESS"
     assert create.call_args.kwargs["file"] == ("voice.ogg", b"ogg", "audio/ogg")
     assert create.call_args.kwargs["language"] == "pt"
+
+
+async def test_export_sends_buffered_document_with_exact_bytes_filename_and_caption():
+    proc = processor()
+    document = ExportDocument(filename="fazenda.xlsx", content=b"workbook-bytes")
+    proc.receive.return_value = BotReply("Aqui está a planilha.", document=document)
+    router = build_router(proc, settings(), SimpleNamespace(transcribe=AsyncMock()))
+    msg = message(text="/exportar")
+
+    await message_handler(router, "text")(msg)
+
+    proc.receive.assert_awaited_once()
+    assert proc.receive.call_args.args == (42, "/exportar")
+    msg.answer_document.assert_awaited_once()
+    upload = msg.answer_document.call_args.args[0]
+    assert upload.filename == "fazenda.xlsx"
+    assert upload.data == b"workbook-bytes"
+    assert msg.answer_document.call_args.kwargs == {"caption": "Aqui está a planilha."}
+    msg.answer.assert_not_awaited()
+    proc.bind_confirmation.assert_not_awaited()
+
+
+async def test_voice_export_sends_document_after_transcription():
+    proc = processor()
+    proc.receive.return_value = BotReply("Planilha", document=ExportDocument("farm.xlsx", b"xlsx-bytes"))
+    transcriber = SimpleNamespace(transcribe=AsyncMock(return_value="me manda a planilha"))
+    router = build_router(proc, settings(), transcriber)
+    msg = message(text=None, voice=SimpleNamespace(file_size=9, file_id="export-voice"))
+
+    async def download(_voice, *, destination):
+        destination.write(b"ogg-bytes")
+
+    await message_handler(router, "voice")(msg, SimpleNamespace(download=download))
+
+    assert proc.receive.call_args.args == (42, "me manda a planilha")
+    assert proc.receive.call_args.kwargs["source"] == "voice"
+    msg.answer_document.assert_awaited_once()
+    assert msg.answer_document.call_args.args[0].data == b"xlsx-bytes"
+    msg.answer.assert_not_awaited()
+
+
+@pytest.mark.parametrize("source", ["text", "voice"])
+async def test_export_delivery_failure_returns_retry_message_without_confirmation(source):
+    proc = processor()
+    proc.receive.return_value = BotReply("Planilha pronta", document=ExportDocument("farm.xlsx", b"xlsx-bytes"))
+    transcriber = SimpleNamespace(transcribe=AsyncMock(return_value="/exportar"))
+    router = build_router(proc, settings(), transcriber)
+    msg = message(text="/exportar", voice=SimpleNamespace(file_size=9, file_id="voice-file"))
+    msg.answer_document.side_effect = OSError("private telegram provider details")
+
+    if source == "voice":
+        async def download(_voice, *, destination):
+            destination.write(b"ogg-bytes")
+        await message_handler(router, "voice")(msg, SimpleNamespace(download=download))
+    else:
+        await message_handler(router, "text")(msg)
+
+    msg.answer_document.assert_awaited_once()
+    msg.answer.assert_awaited_once_with("Não foi possível enviar a planilha. Tente novamente.")
+    proc.bind_confirmation.assert_not_awaited()
+
+
+async def test_export_unauthorized_user_never_processes_or_receives_document():
+    proc = processor()
+    proc.receive.return_value = BotReply("Planilha", document=ExportDocument("farm.xlsx", b"private-data"))
+    router = build_router(proc, settings(), SimpleNamespace(transcribe=AsyncMock()))
+    msg = message(user_id=99, text="/exportar")
+
+    await message_handler(router, "text")(msg)
+
+    proc.receive.assert_not_awaited()
+    msg.answer_document.assert_not_awaited()
+    msg.answer.assert_awaited_once_with("Acesso não autorizado.")
+
+
+async def test_export_group_chat_cannot_process_or_receive_document():
+    proc = processor()
+    proc.receive.return_value = BotReply("Planilha", document=ExportDocument("farm.xlsx", b"private-data"))
+    router = build_router(proc, settings(), SimpleNamespace(transcribe=AsyncMock()))
+    msg = message(text="/exportar")
+    msg.chat.type = "group"
+
+    await message_handler(router, "text")(msg)
+
+    proc.receive.assert_not_awaited()
+    msg.answer_document.assert_not_awaited()
+    assert "chat privado" in msg.answer.call_args.args[0]
+
+
+async def test_export_rechecks_access_before_document_delivery():
+    proc = processor()
+    settings_obj = settings()
+
+    async def make_reply(*args, **kwargs):
+        settings_obj.telegram_allowed_user_ids = "43"
+        return BotReply("Planilha", document=ExportDocument("farm.xlsx", b"private-data"))
+
+    proc.receive.side_effect = make_reply
+    router = build_router(proc, settings_obj, SimpleNamespace(transcribe=AsyncMock()))
+    msg = message(text="/exportar")
+
+    await message_handler(router, "text")(msg)
+
+    proc.receive.assert_awaited_once()
+    msg.answer_document.assert_not_awaited()
+    msg.answer.assert_awaited_once_with("Acesso não autorizado.")
+    proc.bind_confirmation.assert_not_awaited()

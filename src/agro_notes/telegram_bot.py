@@ -9,8 +9,9 @@ from typing import Protocol
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import CommandStart
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from .exports import ExportDocument
 from .provider_factory import build_transcriber
 from .settings import Settings
 from .transcription import Transcriber
@@ -23,6 +24,7 @@ class BotReply:
     text: str
     pending_id: str | None = None
     remove_keyboard: bool = False
+    document: ExportDocument | None = None
 
 
 class Processor(Protocol):
@@ -110,6 +112,19 @@ def build_router(processor: Processor, settings: Settings, transcriber: Transcri
                 await close()
 
     async def reply(message: Message, user_id: int, result: BotReply) -> None:
+        if result.document is not None:
+            if not is_allowed(message.from_user.id if message.from_user else None, settings):
+                await message.answer("Acesso não autorizado.")
+                return
+            try:
+                await message.answer_document(
+                    BufferedInputFile(result.document.content, filename=result.document.filename),
+                    caption=result.text,
+                )
+            except Exception as exc:
+                logger.error("Telegram export delivery failed (%s)", type(exc).__name__)
+                await message.answer("Não foi possível enviar a planilha. Tente novamente.")
+            return
         markup = None
         if result.pending_id:
             markup = InlineKeyboardMarkup(
