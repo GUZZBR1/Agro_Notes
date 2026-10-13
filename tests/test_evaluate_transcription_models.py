@@ -22,6 +22,13 @@ def test_word_error_rate_counts_substitution_insertion_and_deletion():
     assert word_error_rate("a vaca 184 pesou 512", "a vaca 184 pesou 712 hoje") == 2 / 5
 
 
+def test_critical_multiword_terms_require_ordered_adjacent_words():
+    metrics = score_transcription("lote 7", "7 lote", ["lote 7"])
+
+    assert metrics["critical_terms_matched"] == 0
+    assert metrics["critical_term_recall"] == 0
+
+
 def test_stt_candidates_include_only_active_groq_whisper_models():
     active = {"whisper-large-v3", "whisper-large-v3-turbo", "whisper-large-v3-preview"}
 

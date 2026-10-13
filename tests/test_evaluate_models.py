@@ -36,6 +36,21 @@ def test_evaluation_checks_event_intent_required_slots_and_clarification():
     assert score_proposal(case, proposal)["pass"] is True
 
 
+def test_evaluation_rejects_unexpected_extra_events():
+    case = {"id": "WEIGHING", "event_type": "WEIGHING", "required_payload": {"weight_kg": 512}}
+    proposal = SimpleNamespace(
+        events=[
+            SimpleNamespace(event_type="WEIGHING", payload={"weight_kg": 512}, ambiguities=[]),
+            SimpleNamespace(event_type="HEALTH_OBSERVATION", payload={}, ambiguities=[]),
+        ],
+        ambiguities=[],
+        out_of_scope=False,
+    )
+
+    assert score_proposal(case, proposal)["event_count_ok"] is False
+    assert score_proposal(case, proposal)["pass"] is False
+
+
 def test_evaluation_requires_unsupported_requests_to_be_out_of_scope():
     case = {"id": "8_UNSUPPORTED", "event_type": None, "required_payload": {}, "must_be_out_of_scope": True}
     proposal = SimpleNamespace(events=[], ambiguities=[], out_of_scope=True)

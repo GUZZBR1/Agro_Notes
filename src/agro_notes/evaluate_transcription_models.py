@@ -54,9 +54,17 @@ def word_error_rate(reference: str, hypothesis: str) -> float:
 
 
 def score_transcription(reference: str, hypothesis: str, critical_terms: list[str]) -> dict[str, Any]:
-    normalized_hypothesis = set(normalize_words(hypothesis))
+    normalized_hypothesis = normalize_words(hypothesis)
     normalized_critical = [normalize_words(term) for term in critical_terms]
-    matched = [terms for terms in normalized_critical if terms and all(term in normalized_hypothesis for term in terms)]
+    matched = [
+        terms
+        for terms in normalized_critical
+        if terms
+        and any(
+            normalized_hypothesis[index : index + len(terms)] == terms
+            for index in range(len(normalized_hypothesis) - len(terms) + 1)
+        )
+    ]
     return {
         "wer": word_error_rate(reference, hypothesis),
         "critical_terms_total": len(normalized_critical),
@@ -177,8 +185,8 @@ def main() -> None:
     results = [asyncio.run(evaluate_model(key, model, manifest_path)) for model in models]
     results.sort(
         key=lambda result: (
-            result["mean_wer"] if result["mean_wer"] is not None else float("inf"),
             -(result["critical_term_recall"] if result["critical_term_recall"] is not None else 0),
+            result["mean_wer"] if result["mean_wer"] is not None else float("inf"),
             result["error_count"],
             result["estimated_cost_usd"] if result["estimated_cost_usd"] is not None else float("inf"),
             result["median_latency_ms"] if result["median_latency_ms"] is not None else float("inf"),
@@ -187,7 +195,7 @@ def main() -> None:
     winner = results[0]["model"] if len(results) > 1 else None
     status = "COMPLETED" if len(results) > 1 else "SINGLE_MODEL_AVAILABLE"
     rationale = (
-        "Ordenado por WER, recall de termos críticos, erros, custo estimado e latência."
+        "Ordenado por recall de termos críticos, WER, erros, custo estimado e latência."
         if winner
         else "Somente um dos modelos Whisper de produção está ativo e foi avaliado."
     )

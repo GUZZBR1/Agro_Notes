@@ -44,19 +44,26 @@ def score_proposal(case: dict[str, Any], proposal: Any) -> dict[str, Any]:
         payload_ok = payload_ok and all(
             getattr(proposal, key, None) == value for key, value in case.get("required_proposal", {}).items()
         )
-        if "event_count" in case:
-            payload_ok = payload_ok and len(events) == case["event_count"]
+        payload_ok = payload_ok and len(events) == case.get("event_count", 1)
     ambiguity_ok = not case.get("must_be_ambiguous") or bool(proposal.ambiguities) or bool(
         events and events[0].ambiguities
     )
     scope_ok = not case.get("must_be_out_of_scope") or proposal.out_of_scope
+    event_count_ok = len(events) == case.get("event_count", 0 if expected_type is None else 1)
     return {
         "id": case["id"],
         "intent_ok": intent_ok,
         "required_payload_ok": payload_ok if expected_type is not None else True,
         "ambiguity_ok": ambiguity_ok,
         "scope_ok": scope_ok,
-        "pass": intent_ok and (payload_ok if expected_type is not None else True) and ambiguity_ok and scope_ok,
+        "event_count_ok": event_count_ok,
+        "pass": (
+            intent_ok
+            and event_count_ok
+            and (payload_ok if expected_type is not None else True)
+            and ambiguity_ok
+            and scope_ok
+        ),
     }
 
 
