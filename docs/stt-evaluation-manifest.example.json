@@ -4,6 +4,7 @@
     "audio_path": "local-audio/clean-weight.ogg",
     "reference_text": "A 184 pesou 512 quilos hoje.",
     "critical_terms": ["184", "512"],
+    "matrix_tags": ["clean_voice", "numbers", "animal_identifiers"],
     "duration_seconds": 4.2
   },
   {
@@ -11,6 +12,8 @@
     "audio_path": "local-audio/noise-transfer.ogg",
     "reference_text": "A 184 foi para o lote sete hoje.",
     "critical_terms": ["184", "lote sete"],
+    "critical_term_aliases": {"lote sete": ["lote 7"]},
+    "matrix_tags": ["background_noise", "lot_names", "animal_identifiers"],
     "duration_seconds": 5.1
   },
   {
@@ -18,6 +21,7 @@
     "audio_path": "local-audio/fast-calving.ogg",
     "reference_text": "A 184 pariu hoje. Nasceu uma fêmea número 391.",
     "critical_terms": ["184", "391"],
+    "matrix_tags": ["fast_speech", "numbers", "animal_identifiers"],
     "duration_seconds": 6.0
   },
   {
@@ -25,6 +29,7 @@
     "audio_path": "local-audio/regional-health.ogg",
     "reference_text": "A 184 tá mancando da pata traseira direita.",
     "critical_terms": ["184", "traseira direita"],
+    "matrix_tags": ["regionalisms", "animal_identifiers"],
     "duration_seconds": 4.8
   },
   {
@@ -32,6 +37,7 @@
     "audio_path": "local-audio/quiet-short.ogg",
     "reference_text": "Pesei a 184.",
     "critical_terms": ["184"],
+    "matrix_tags": ["low_voice", "short_audio", "animal_identifiers"],
     "duration_seconds": 2.1
   }
 ]
