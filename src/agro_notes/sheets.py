@@ -55,6 +55,18 @@ TAB_HEADERS: dict[str, tuple[str, ...]] = {
     "19_Usuarios": tuple(
         "user_id display_name role property_id permissions_profile active valid_from valid_to".split()
     ),
+    "Telegram_Access": tuple(
+        "event_id event_type telegram_user_id display_name username property_id role state access_code_id "
+        "code_hash created_at expires_at max_uses reason attempt_count blocked_until actor_id".split()
+    ),
+    "Google_OAuth_States": tuple(
+        "event_id state_hash telegram_user_id property_id created_at expires_at status consumed_at "
+        "encrypted_code_verifier".split()
+    ),
+    "Google_Connections": tuple(
+        "connection_id telegram_user_id property_id provider google_account_ref encrypted_refresh_token "
+        "scopes connected_at expires_at status revoked_at".split()
+    ),
     "20_Event_Effects": tuple(
         "effect_id property_id source_event_id effect_type target_type target_id idempotency_key status attempt_count retryable error before_ref after_ref reversed_by updated_at".split()  # noqa: E501
     ),

@@ -7,9 +7,13 @@ import logging
 from contextlib import asynccontextmanager
 
 from aiogram import Bot, Dispatcher
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 
+from .access_control import AccessService
 from .application import MVPProcessor
+from .google_drive import GoogleDriveOAuth
 from .provider_factory import build_interpreter, build_transcriber
 from .settings import get_settings
 from .sheets import GoogleSheetsStore
@@ -24,6 +28,8 @@ async def lifespan(app: FastAPI):
     settings.validate_runtime()
     store = GoogleSheetsStore.from_credentials(settings)
     await asyncio.to_thread(store.bootstrap)
+    access = AccessService(store, settings)
+    google_drive = GoogleDriveOAuth(store, settings, access)
     transcriber = None
     interpreter = None
     bot = None
@@ -31,14 +37,16 @@ async def lifespan(app: FastAPI):
     polling = None
     try:
         interpreter = build_interpreter(settings)
-        processor = MVPProcessor(settings, store, interpreter)
+        processor = MVPProcessor(settings, store, interpreter, access=access, drive_export=google_drive)
         transcriber = build_transcriber(settings)
         dispatcher = Dispatcher()
-        dispatcher.include_router(build_router(processor, settings, transcriber))
+        dispatcher.include_router(build_router(processor, settings, transcriber, access, google_drive))
         bot = Bot(settings.telegram_bot_token)
         polling = asyncio.create_task(dispatcher.start_polling(bot))
         app.state.store = store
         app.state.processor = processor
+        app.state.google_drive = google_drive
+        app.state.bot = bot
         app.state.ai_provider = settings.ai_provider
         app.state.transcription_provider = settings.transcription_provider
         app.state.polling_task = polling
@@ -72,6 +80,56 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Agro Notes MVP", lifespan=lifespan)
+
+
+def _oauth_page(message: str, *, status_code: int = 200) -> HTMLResponse:
+    return HTMLResponse(
+        f"<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>Agro Notes</title>"
+        f"<body><main><h1>Agro Notes</h1><p>{message}</p></main></body></html>",
+        status_code=status_code,
+        headers={
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "Content-Security-Policy": "default-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+        },
+    )
+
+
+@app.get("/oauth/google/callback", response_class=HTMLResponse)
+async def google_oauth_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+) -> HTMLResponse:
+    service = getattr(app.state, "google_drive", None)
+    bot = getattr(app.state, "bot", None)
+    if service is None or bot is None:
+        return _oauth_page("Não foi possível concluir a conexão agora. Tente novamente pelo bot.", status_code=503)
+    try:
+        pending = await asyncio.to_thread(service.handle_callback, state=state, code=code, error=error)
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="Confirmar conexão", callback_data=f"drive_connect:{pending['connection_id']}"
+                    )
+                ]
+            ]
+        )
+        await bot.send_message(
+            chat_id=pending["telegram_user_id"],
+            text=(
+                f"O Google Drive autorizado é {pending['google_account_ref']}. "
+                "Confirme aqui no Telegram para concluir a conexão."
+            ),
+            reply_markup=keyboard,
+        )
+    except Exception as exc:
+        logger.warning("Google OAuth callback failed (%s)", type(exc).__name__)
+        return _oauth_page(
+            "Não foi possível validar a autorização. Volte ao bot e solicite um novo link.", status_code=400
+        )
+    return _oauth_page("Autorização recebida. Volte ao Telegram e confirme a conexão no bot.")
 
 
 @app.get("/health")

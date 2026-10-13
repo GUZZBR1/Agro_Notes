@@ -1258,6 +1258,47 @@ async def test_authorized_export_returns_workbook_without_interpretation_or_pers
     interpreter.interpret.assert_not_called()
 
 
+async def test_drive_export_reuses_generated_xlsx_and_uses_requesting_telegram_identity():
+    store = MemoryStore()
+    before = deepcopy(store.tabs)
+    drive = SimpleNamespace(
+        upload_for_user=Mock(return_value={"file_id": "drive-file", "web_view_link": "https://drive.test/file"})
+    )
+    interpreter = SimpleNamespace(interpret=Mock(side_effect=AssertionError("export must bypass interpretation")))
+    processor = MVPProcessor(
+        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"), store, interpreter, drive_export=drive
+    )
+
+    result = await request_export(processor, "salva minha planilha no Drive")
+
+    assert result.document is None
+    assert "Planilha salva" in result.text
+    assert "https://drive.test/file" in result.text
+    drive.upload_for_user.assert_called_once()
+    user_id, document = drive.upload_for_user.call_args.args
+    assert user_id == 42
+    assert document.filename.endswith(".xlsx")
+    assert document.content[:2] == b"PK"
+    assert store.tabs == before
+    interpreter.interpret.assert_not_called()
+
+
+async def test_unauthorized_drive_export_never_uses_a_user_connection():
+    store = MemoryStore()
+    drive = SimpleNamespace(upload_for_user=Mock(side_effect=AssertionError("must not upload")))
+    processor = MVPProcessor(
+        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"),
+        store,
+        SimpleNamespace(interpret=Mock()),
+        drive_export=drive,
+    )
+
+    result = await request_export(processor, "salva minha planilha no Drive", user_id=99)
+
+    assert result.text == "Acesso não autorizado."
+    drive.upload_for_user.assert_not_called()
+
+
 async def test_export_unauthorized_user_cannot_read_or_interpret_data():
     store = SimpleNamespace(read_rows=Mock(side_effect=AssertionError("unauthorized read")))
     interpreter = SimpleNamespace(interpret=Mock(side_effect=AssertionError("unauthorized interpretation")))
@@ -1267,6 +1308,23 @@ async def test_export_unauthorized_user_cannot_read_or_interpret_data():
 
     assert result.document is None
     assert result.text == "Acesso não autorizado."
+    store.read_rows.assert_not_called()
+    interpreter.interpret.assert_not_called()
+
+
+async def test_export_persisted_access_denial_overrides_legacy_whitelist():
+    store = SimpleNamespace(read_rows=Mock(side_effect=AssertionError("unauthorized read")))
+    access = SimpleNamespace(is_authorized=AsyncMock(return_value=False))
+    interpreter = SimpleNamespace(interpret=Mock())
+    processor = MVPProcessor(
+        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"), store, interpreter, access=access
+    )
+
+    result = await request_export(processor)
+
+    assert result.document is None
+    assert result.text == "Acesso não autorizado."
+    access.is_authorized.assert_awaited_once_with(42)
     store.read_rows.assert_not_called()
     interpreter.interpret.assert_not_called()
 
