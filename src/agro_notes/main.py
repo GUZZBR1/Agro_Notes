@@ -13,7 +13,7 @@ from .application import MVPProcessor
 from .provider_factory import build_interpreter, build_transcriber
 from .settings import get_settings
 from .sheets import GoogleSheetsStore
-from .telegram_bot import build_router
+from .telegram_bot import DurableTranscriptionQueue, build_router
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -25,6 +25,7 @@ async def lifespan(app: FastAPI):
     store = GoogleSheetsStore.from_credentials(settings)
     await asyncio.to_thread(store.bootstrap)
     transcriber = None
+    transcription_queue = None
     interpreter = None
     bot = None
     dispatcher = None
@@ -33,9 +34,11 @@ async def lifespan(app: FastAPI):
         interpreter = build_interpreter(settings)
         processor = MVPProcessor(settings, store, interpreter)
         transcriber = build_transcriber(settings)
+        transcription_queue = DurableTranscriptionQueue(processor, settings, transcriber)
         dispatcher = Dispatcher()
-        dispatcher.include_router(build_router(processor, settings, transcriber))
+        dispatcher.include_router(build_router(processor, settings, transcriber, transcription_queue))
         bot = Bot(settings.telegram_bot_token)
+        await transcription_queue.start(bot)
         polling = asyncio.create_task(dispatcher.start_polling(bot))
         app.state.store = store
         app.state.processor = processor
@@ -44,6 +47,11 @@ async def lifespan(app: FastAPI):
         app.state.polling_task = polling
         yield
     finally:
+        if transcription_queue:
+            try:
+                await transcription_queue.close()
+            except Exception as exc:
+                logger.error("Transcription recovery shutdown failed (%s)", type(exc).__name__)
         if dispatcher and polling and not polling.done():
             try:
                 await dispatcher.stop_polling()

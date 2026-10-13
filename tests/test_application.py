@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -178,6 +179,65 @@ async def test_ready_health_observation_appends_event_target_and_audit_once():
     assert store.tabs["07_Evento_Animais"][0]["animal_id"] == "animal-42"
     assert store.tabs["20_Event_Effects"][-1]["status"] == "APPLIED"
     assert any(row["action"] == "DUPLICATE_DELIVERY" for row in store.tabs["99_Audit_Log"])
+
+
+@pytest.mark.asyncio
+async def test_transcription_retry_state_is_durable_and_does_not_block_canonical_processing():
+    store = MemoryStore()
+    processor = make_processor(store)
+    await processor.persist_transcription_state(
+        42,
+        message_id="chat:voice-1",
+        captured_at=datetime(2026, 10, 13, tzinfo=UTC).isoformat(),
+        received_at=datetime(2026, 10, 13, tzinfo=UTC).isoformat(),
+        source_reference="telegram-file-id",
+        state="RETRY_WAIT",
+        queue_metadata={"retry_count": 1, "next_attempt_at": "2026-10-13T01:00:00+00:00"},
+        response="waiting",
+    )
+
+    jobs = await processor.transcription_jobs()
+    assert len(jobs) == 1
+    assert jobs[0]["state"] == "RETRY_WAIT"
+    assert jobs[0]["audio_ref"] == "telegram-file-id"
+    assert jobs[0]["command_id"] == "tg:42:chat:voice-1"
+    assert json.loads(jobs[0]["pending_command_json"])["idempotency_key"] == "tg:42:chat:voice-1"
+
+    # A recovered transcript follows the same command through normal processing.
+    await processor.persist_transcription_state(
+        42,
+        message_id="chat:voice-1",
+        captured_at=jobs[0]["captured_at"],
+        received_at=jobs[0]["received_at"],
+        source_reference="telegram-file-id",
+        state="TRANSCRIBED",
+        queue_metadata={"retry_count": 1},
+        transcript="relato",
+    )
+    result = await processor.receive(
+        42,
+        "relato",
+        source="voice",
+        message_id="chat:voice-1",
+        captured_at=jobs[0]["captured_at"],
+        device_timezone=None,
+        source_reference="telegram-file-id",
+        received_at=jobs[0]["received_at"],
+    )
+    assert result.text.startswith("✅")
+    duplicate = await processor.receive(
+        42,
+        "relato",
+        source="voice",
+        message_id="chat:voice-1",
+        captured_at=jobs[0]["captured_at"],
+        device_timezone=None,
+        source_reference="telegram-file-id",
+        received_at=jobs[0]["received_at"],
+    )
+    assert "já foi registrado" in duplicate.text
+    assert len(store.tabs["06_Eventos"]) == 2
+    assert (await processor.transcription_jobs()) == []
 
 
 @pytest.mark.asyncio
