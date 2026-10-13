@@ -110,6 +110,14 @@ class FixedInterpreter:
         return self.proposal
 
 
+class SequenceInterpreter:
+    def __init__(self, *proposals):
+        self.proposals = iter(proposals)
+
+    def interpret(self, _text):
+        return next(self.proposals)
+
+
 def make_processor(
     store, event_type="HEALTH_OBSERVATION", payload=None, correction_of=None, correction_requested=False
 ):
@@ -130,11 +138,11 @@ def make_processor(
     return MVPProcessor(settings, store, FixedInterpreter(proposal))
 
 
-def receive(processor, message_id="chat:1"):
+def receive(processor, message_id="chat:1", source="text"):
     return processor.receive(
         42,
         "relato",
-        source="text",
+        source=source,
         message_id=message_id,
         captured_at=datetime(2026, 10, 13, tzinfo=UTC).isoformat(),
         device_timezone=None,
@@ -305,6 +313,108 @@ async def test_confirmation_is_persisted_then_applies_and_marks_conversation():
     assert store.tabs["06_Eventos"][-1]["interpretation_confirmation"] == "USER_CONFIRMED"
     assert store.tabs["06_Eventos"][-1]["event_status"] == "CONFIRMED"
     assert store.tabs["18_Conversas"][-1]["state"] == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_voice_weighing_requires_confirmation_before_any_event_is_written():
+    store = MemoryStore()
+    processor = make_processor(store, "WEIGHING", {"animal_identifier": "42", "weight_kg": 712})
+
+    preview = await receive(processor, source="voice")
+
+    assert preview.pending_id == "tg:42:chat:1"
+    assert "712" in preview.text
+    assert not store.tabs["06_Eventos"]
+
+    confirmed = await processor.confirm(42, preview.pending_id)
+
+    assert confirmed.text.startswith("✅")
+    assert store.tabs["06_Eventos"][-1]["interpretation_confirmation"] == "USER_CONFIRMED"
+
+
+@pytest.mark.asyncio
+async def test_voice_source_check_is_case_insensitive_for_weighing_confirmation():
+    store = MemoryStore()
+    processor = make_processor(store, "WEIGHING", {"animal_identifier": "42", "weight_kg": 712})
+
+    preview = await receive(processor, source="VOICE")
+
+    assert preview.pending_id == "tg:42:chat:1"
+    assert not store.tabs["06_Eventos"]
+
+
+@pytest.mark.asyncio
+async def test_voice_weighing_still_requires_confirmation_after_text_clarification():
+    store = MemoryStore()
+    processor = make_processor(store, "WEIGHING", {"animal_identifier": "42", "weight_kg": 712})
+    processor.interpreter = SequenceInterpreter(
+        InterpretationProposal(
+            events=[
+                EventProposal(
+                    event_type="WEIGHING",
+                    payload={"animal_identifier": "42", "weight_kg": 712},
+                    time_expression="",
+                    confidence=0.98,
+                )
+            ]
+        ),
+        InterpretationProposal(
+            events=[
+                EventProposal(
+                    event_type="WEIGHING",
+                    payload={"animal_identifier": "42", "weight_kg": 712},
+                    time_expression="hoje",
+                    confidence=0.98,
+                )
+            ]
+        ),
+    )
+
+    clarification = await receive(processor, source="voice")
+    preview = await receive(processor, message_id="chat:2", source="text")
+
+    assert clarification.pending_id is None
+    assert preview.pending_id == "tg:42:chat:1"
+    assert "712" in preview.text
+    assert not store.tabs["06_Eventos"]
+
+
+@pytest.mark.asyncio
+async def test_voice_clarification_turn_makes_later_text_weighing_require_confirmation():
+    store = MemoryStore()
+    processor = make_processor(store, "WEIGHING", {"animal_identifier": "42", "weight_kg": 712})
+    processor.interpreter = SequenceInterpreter(
+        *[
+            InterpretationProposal(
+                events=[
+                    EventProposal(
+                        event_type="WEIGHING",
+                        payload={"animal_identifier": "42", "weight_kg": 712},
+                        time_expression="",
+                        confidence=0.98,
+                    )
+                ]
+            )
+            for _ in range(2)
+        ],
+        InterpretationProposal(
+            events=[
+                EventProposal(
+                    event_type="WEIGHING",
+                    payload={"animal_identifier": "42", "weight_kg": 712},
+                    time_expression="hoje",
+                    confidence=0.98,
+                )
+            ]
+        ),
+    )
+
+    await receive(processor, source="text")
+    await receive(processor, message_id="chat:2", source="voice")
+    preview = await receive(processor, message_id="chat:3", source="text")
+
+    assert preview.pending_id == "tg:42:chat:1"
+    assert not store.tabs["06_Eventos"]
 
 
 @pytest.mark.asyncio

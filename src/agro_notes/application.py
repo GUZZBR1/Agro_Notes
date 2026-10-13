@@ -139,6 +139,8 @@ class MVPProcessor:
             clarification_context: dict[str, Any] = {
                 "original_transcript": text,
                 "original_captured_at": captured_at,
+                "original_source": source,
+                "voice_involved": source.casefold() == "voice",
                 "turns": [],
             }
             if prior and prior.get("state") == "NEEDS_CLARIFICATION":
@@ -156,6 +158,13 @@ class MVPProcessor:
                     "original_captured_at": str(
                         clarification_context.get("original_captured_at") or prior.get("captured_at") or captured_at
                     ),
+                    "original_source": str(
+                        clarification_context.get("original_source") or prior.get("source") or source
+                    ),
+                    "voice_involved": bool(clarification_context.get("voice_involved"))
+                    or source.casefold() == "voice"
+                    or str(clarification_context.get("original_source") or prior.get("source") or "").casefold()
+                    == "voice",
                     "turns": list(clarification_context.get("turns") or []),
                 }
                 clarification_context["turns"].append(
@@ -191,6 +200,14 @@ class MVPProcessor:
                     inferred_captured_at=clarification_context["original_captured_at"],
                 )
                 result = self.validator.validate(proposal, trusted)
+                if (
+                    clarification_context["voice_involved"]
+                    and result.status == ValidationStatus.READY
+                    and any(event.event_type == EventType.WEIGHING for event in result.events)
+                ):
+                    result = result.model_copy(
+                        update={"status": ValidationStatus.NEEDS_CONFIRMATION, "requires_preview": True}
+                    )
                 proposal = result.proposal
                 if result.status == ValidationStatus.REJECTED:
                     answer = "Não posso registrar essa solicitação no MVP: " + "; ".join(result.errors)
