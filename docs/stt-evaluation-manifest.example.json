@@ -1,0 +1,37 @@
+[
+  {
+    "id": "clean-weight",
+    "audio_path": "local-audio/clean-weight.ogg",
+    "reference_text": "A 184 pesou 512 quilos hoje.",
+    "critical_terms": ["184", "512"],
+    "duration_seconds": 4.2
+  },
+  {
+    "id": "background-noise-transfer",
+    "audio_path": "local-audio/noise-transfer.ogg",
+    "reference_text": "A 184 foi para o lote sete hoje.",
+    "critical_terms": ["184", "lote sete"],
+    "duration_seconds": 5.1
+  },
+  {
+    "id": "fast-calving-identifiers",
+    "audio_path": "local-audio/fast-calving.ogg",
+    "reference_text": "A 184 pariu hoje. Nasceu uma fêmea número 391.",
+    "critical_terms": ["184", "391"],
+    "duration_seconds": 6.0
+  },
+  {
+    "id": "regional-health",
+    "audio_path": "local-audio/regional-health.ogg",
+    "reference_text": "A 184 tá mancando da pata traseira direita.",
+    "critical_terms": ["184", "traseira direita"],
+    "duration_seconds": 4.8
+  },
+  {
+    "id": "quiet-short",
+    "audio_path": "local-audio/quiet-short.ogg",
+    "reference_text": "Pesei a 184.",
+    "critical_terms": ["184"],
+    "duration_seconds": 2.1
+  }
+]

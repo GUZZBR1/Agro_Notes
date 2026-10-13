@@ -51,9 +51,11 @@ class ProviderInterpreter:
 
     def __init__(self, provider: Any):
         self.provider = provider
+        self.last_metadata = None
 
     def interpret(self, text: str) -> InterpretationProposal:
         result = self.provider.interpret(text)
+        self.last_metadata = result.metadata
         return result.proposal
 
     def close(self) -> None:

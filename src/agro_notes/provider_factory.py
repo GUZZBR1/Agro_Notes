@@ -1,7 +1,7 @@
 """Select configured providers while keeping application/domain code neutral."""
 
-from .interpreter import ProviderInterpreter, StructuredOutputInterpreter
-from .llm import OpenAIResponsesClient
+from .interpreter import ProviderInterpreter
+from .llm import OpenAIInterpretationProvider
 from .settings import Settings
 from .transcription import OpenAITranscriber
 
@@ -11,7 +11,7 @@ def build_interpreter(settings: Settings):
         from .groq_interpreter import GroqInterpretationProvider
 
         return ProviderInterpreter(GroqInterpretationProvider(settings))
-    return StructuredOutputInterpreter(OpenAIResponsesClient(settings))
+    return ProviderInterpreter(OpenAIInterpretationProvider(settings))
 
 
 def build_transcriber(settings: Settings):

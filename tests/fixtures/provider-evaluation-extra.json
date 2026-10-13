@@ -1,0 +1,7 @@
+[
+  {"id":"AMBIGUOUS_TRANSFER","text":"Passei ela pro sete.","event_type":"LOT_TRANSFER","required_payload":{},"must_be_ambiguous":true},
+  {"id":"CORRECTION_EXPLICIT","text":"Não era 87 kg, era 78.","event_type":"WEIGHING","required_payload":{"weight_kg":78},"required_proposal":{"correction_requested":true}},
+  {"id":"WEIGHING_NUMBER_WORDS","text":"A 184 pesou quinhentos e doze quilos.","event_type":"WEIGHING","required_payload":{"animal_identifier":"184","weight_kg":512}},
+  {"id":"REGIONAL_HEALTH","text":"A 184 tá mancando da traseira direita.","event_type":"HEALTH_OBSERVATION","required_payload":{"animal_identifier":"184"}},
+  {"id":"CALVING_COMPOSITE","text":"A 184 pariu hoje. Nasceu uma fêmea número 391.","event_type":"CALVING","required_payload":{"mother_identifier":"184","outcome_count":1},"required_proposal":{"out_of_scope":false}}
+]

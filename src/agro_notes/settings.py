@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,16 +9,25 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
     telegram_allowed_user_ids: str = Field(default="", alias="TELEGRAM_ALLOWED_USER_IDS")
-    farm_property_id: str = Field(default="FARM-001", alias="FARM_PROPERTY_ID")
-    farm_timezone: str = Field(default="America/Sao_Paulo", alias="FARM_TIMEZONE")
+    farm_property_id: str = Field(
+        default="FARM-001", validation_alias=AliasChoices("PROPERTY_ID", "FARM_PROPERTY_ID")
+    )
+    farm_timezone: str = Field(
+        default="America/Sao_Paulo", validation_alias=AliasChoices("PROPERTY_TIMEZONE", "FARM_TIMEZONE")
+    )
     google_sheet_id: str = Field(default="", alias="GOOGLE_SHEET_ID")
     google_credentials_file: str = Field(
-        default="credentials/google-service-account.json", alias="GOOGLE_CREDENTIALS_FILE"
+        default="credentials/google-service-account.json",
+        validation_alias=AliasChoices("GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CREDENTIALS_FILE"),
     )
-    ai_provider: str = Field(default="groq", alias="AI_PROVIDER")
+    ai_provider: str = Field(
+        default="groq", validation_alias=AliasChoices("AI_PROVIDER", "INTERPRETATION_PROVIDER")
+    )
     transcription_provider: str = Field(default="groq", alias="TRANSCRIPTION_PROVIDER")
     groq_api_key: str = Field(default="", alias="GROQ_API_KEY")
-    groq_model: str = Field(default="openai/gpt-oss-20b", alias="GROQ_MODEL")
+    groq_model: str = Field(
+        default="openai/gpt-oss-20b", validation_alias=AliasChoices("GROQ_LLM_MODEL", "GROQ_MODEL")
+    )
     groq_transcription_model: str = Field(default="whisper-large-v3-turbo", alias="GROQ_TRANSCRIPTION_MODEL")
     groq_base_url: str = Field(default="https://api.groq.com/openai/v1", alias="GROQ_BASE_URL")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")

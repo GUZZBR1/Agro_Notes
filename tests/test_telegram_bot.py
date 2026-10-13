@@ -189,6 +189,8 @@ async def test_openai_transcription_uses_memory_and_portuguese():
     create = AsyncMock(return_value=SimpleNamespace(text="  dois bezerros  "))
     client = SimpleNamespace(audio=SimpleNamespace(transcriptions=SimpleNamespace(create=create)))
     result = await OpenAITranscriber(settings(), client).transcribe(b"ogg")
-    assert result == "dois bezerros"
+    assert result.text == "dois bezerros"
+    assert result.metadata.provider == "openai"
+    assert result.metadata.outcome.value == "SUCCESS"
     assert create.call_args.kwargs["file"] == ("voice.ogg", b"ogg", "audio/ogg")
     assert create.call_args.kwargs["language"] == "pt"

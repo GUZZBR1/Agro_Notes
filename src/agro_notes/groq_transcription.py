@@ -11,6 +11,12 @@ from .provider_contracts import ProviderMetadata, ProviderOutcome, Transcription
 from .settings import Settings
 
 
+class GroqTranscriptionError(RuntimeError):
+    def __init__(self, metadata: ProviderMetadata) -> None:
+        self.metadata = metadata
+        super().__init__(f"Groq transcription failed ({metadata.outcome.value}).")
+
+
 class GroqTranscriber:
     def __init__(self, settings: Settings, client: Any | None = None) -> None:
         self.model = settings.groq_transcription_model
@@ -18,7 +24,7 @@ class GroqTranscriber:
             api_key=settings.groq_api_key,
             base_url=settings.groq_base_url,
             timeout=30.0,
-            max_retries=1,
+            max_retries=0,
         )
 
     async def close(self) -> None:
@@ -40,17 +46,27 @@ class GroqTranscriber:
                 else ProviderOutcome.RATE_LIMITED if "rate" in name.casefold()
                 else ProviderOutcome.ERROR
             )
-            raise RuntimeError(f"Groq transcription failed ({outcome.value}).") from None
+            metadata = ProviderMetadata(
+                provider="groq",
+                model=self.model,
+                latency_ms=max(0.0, (perf_counter() - started) * 1000),
+                outcome=outcome,
+            )
+            metadata.emit_log(operation="transcribe", failed=True)
+            raise GroqTranscriptionError(metadata) from None
         request_id = getattr(response, "_request_id", None) or getattr(response, "id", None)
+        metadata = ProviderMetadata(
+            provider="groq",
+            model=self.model,
+            latency_ms=max(0.0, (perf_counter() - started) * 1000),
+            outcome=ProviderOutcome.SUCCESS,
+            request_id=str(request_id) if request_id else None,
+            audio_seconds=getattr(response, "duration", None),
+        )
+        metadata.emit_log(operation="transcribe")
         return TranscriptionResult(
             text=response.text.strip(),
             language=getattr(response, "language", None) or "pt",
             confidence=None,
-            metadata=ProviderMetadata(
-                provider="groq",
-                model=self.model,
-                latency_ms=max(0.0, (perf_counter() - started) * 1000),
-                outcome=ProviderOutcome.SUCCESS,
-                request_id=str(request_id) if request_id else None,
-            ),
+            metadata=metadata,
         )

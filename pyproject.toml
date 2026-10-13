@@ -21,6 +21,10 @@ dependencies = [
 
 [project.scripts]
 agro-notes-metrics = "agro_notes.metrics:main"
+agro-notes-evaluate-groq = "agro_notes.evaluate_models:main"
+agro-notes-evaluate-stt = "agro_notes.evaluate_transcription_models:main"
+agro-notes-smoke-telegram = "agro_notes.smoke_telegram:main"
+agro-notes-smoke-sheets = "agro_notes.smoke_google_sheets:main"
 
 [project.optional-dependencies]
 dev = [

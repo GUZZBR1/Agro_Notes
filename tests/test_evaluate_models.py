@@ -1,7 +1,7 @@
 import json
 from types import SimpleNamespace
 
-from agro_notes.evaluate_models import FIXTURE, score_proposal
+from agro_notes.evaluate_models import EXTRA_FIXTURE, FIXTURE, score_proposal, select_candidate_models
 
 
 def test_provider_golden_fixture_contains_the_eight_required_flow_ids():
@@ -41,3 +41,18 @@ def test_evaluation_requires_unsupported_requests_to_be_out_of_scope():
     proposal = SimpleNamespace(events=[], ambiguities=[], out_of_scope=True)
 
     assert score_proposal(case, proposal)["pass"] is True
+
+
+def test_model_candidates_are_discovered_from_active_production_strict_models():
+    active = {"openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.8-27b", "llama-3.3-70b-versatile"}
+
+    assert select_candidate_models(active) == ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+    assert select_candidate_models(active, ["openai/gpt-oss-20b"]) == ["openai/gpt-oss-20b"]
+    assert select_candidate_models({"qwen/qwen3.8-27b"}) == []
+
+
+def test_evaluation_extras_include_corrections_regionalism_and_composite_event():
+    cases = json.loads(EXTRA_FIXTURE.read_text(encoding="utf-8"))
+    ids = {case["id"] for case in cases}
+
+    assert {"AMBIGUOUS_TRANSFER", "CORRECTION_EXPLICIT", "REGIONAL_HEALTH", "CALVING_COMPOSITE"} <= ids

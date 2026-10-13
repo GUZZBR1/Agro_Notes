@@ -66,3 +66,22 @@ def test_transcription_rejects_invalid_confidence(confidence):
 def test_interpretation_result_rejects_non_proposal_json():
     with pytest.raises(ValidationError):
         InterpretationResult(proposal={"diagnosis": "invented"}, metadata=metadata())
+
+
+def test_provider_metadata_exposes_safe_observability_fields(caplog):
+    item = metadata(input_tokens=11, output_tokens=5, audio_seconds=2.5)
+
+    with caplog.at_level("INFO", logger="agro_notes.providers"):
+        item.emit_log(operation="interpret")
+
+    record = caplog.records[-1]
+    assert record.provider_name == "example"
+    assert record.provider_model == "speech-or-text-model"
+    assert record.provider_latency_ms == 12.5
+    assert record.provider_outcome == "SUCCESS"
+    assert record.provider_schema_valid is None
+    assert record.provider_retry_count == 0
+    assert record.provider_input_tokens == 11
+    assert record.provider_output_tokens == 5
+    assert record.provider_audio_seconds == 2.5
+    assert "api_key" not in record.__dict__

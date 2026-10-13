@@ -3,7 +3,7 @@ import pytest
 import agro_notes.groq_interpreter as groq_interpreter
 import agro_notes.groq_transcription as groq_transcription
 import agro_notes.provider_factory as provider_factory
-from agro_notes.interpreter import ProviderInterpreter, StructuredOutputInterpreter
+from agro_notes.interpreter import ProviderInterpreter
 from agro_notes.settings import Settings
 
 
@@ -40,6 +40,31 @@ def test_selected_provider_requires_its_own_credential():
         settings.validate_provider_configuration()
 
 
+def test_factory_variable_aliases_cover_briefing_and_existing_names():
+    settings = Settings(
+        INTERPRETATION_PROVIDER="groq",
+        TRANSCRIPTION_PROVIDER="groq",
+        GROQ_LLM_MODEL="openai/gpt-oss-120b",
+        PROPERTY_ID="FARM-TEST",
+        PROPERTY_TIMEZONE="America/Sao_Paulo",
+        GOOGLE_APPLICATION_CREDENTIALS="credentials/test.json",
+    )
+    legacy = Settings(
+        AI_PROVIDER="openai",
+        OPENAI_API_KEY="test-key",
+        FARM_PROPERTY_ID="FARM-LEGACY",
+        GOOGLE_CREDENTIALS_FILE="credentials/legacy.json",
+    )
+
+    assert settings.ai_provider == "groq"
+    assert settings.groq_model == "openai/gpt-oss-120b"
+    assert settings.farm_property_id == "FARM-TEST"
+    assert settings.google_credentials_file == "credentials/test.json"
+    assert legacy.ai_provider == "openai"
+    assert legacy.farm_property_id == "FARM-LEGACY"
+    assert legacy.google_credentials_file == "credentials/legacy.json"
+
+
 def test_factory_selects_the_configured_groq_adapters(monkeypatch):
     class FakeGroqInterpreter:
         def __init__(self, settings):
@@ -62,7 +87,7 @@ def test_factory_selects_the_configured_groq_adapters(monkeypatch):
 
 
 def test_factory_keeps_openai_available_for_each_seam(monkeypatch):
-    class FakeResponsesClient:
+    class FakeOpenAIInterpreter:
         def __init__(self, settings):
             self.settings = settings
 
@@ -70,9 +95,12 @@ def test_factory_keeps_openai_available_for_each_seam(monkeypatch):
         def __init__(self, settings):
             self.settings = settings
 
-    monkeypatch.setattr(provider_factory, "OpenAIResponsesClient", FakeResponsesClient)
+    monkeypatch.setattr(provider_factory, "OpenAIInterpretationProvider", FakeOpenAIInterpreter)
     monkeypatch.setattr(provider_factory, "OpenAITranscriber", FakeOpenAITranscriber)
     settings = Settings(AI_PROVIDER="openai", TRANSCRIPTION_PROVIDER="openai", OPENAI_API_KEY="test-key")
 
-    assert isinstance(provider_factory.build_interpreter(settings), StructuredOutputInterpreter)
+    interpreter = provider_factory.build_interpreter(settings)
+
+    assert isinstance(interpreter, ProviderInterpreter)
+    assert isinstance(interpreter.provider, FakeOpenAIInterpreter)
     assert isinstance(provider_factory.build_transcriber(settings), FakeOpenAITranscriber)
