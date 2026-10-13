@@ -150,6 +150,10 @@ def receive(processor, message_id="chat:1", source="text"):
     )
 
 
+def message_handler(router, name):
+    return next(handler.callback for handler in router.message.handlers if handler.callback.__name__ == name)
+
+
 def test_trusted_context_rejects_invalid_or_timezone_free_capture_time():
     processor = make_processor(MemoryStore())
 
@@ -237,7 +241,7 @@ async def test_voice_to_event_to_history_integrated_path_with_service_doubles():
     async def download(_voice, *, destination):
         destination.write(b"voice-audio")
 
-    await router.message.handlers[1].callback(voice_message, SimpleNamespace(download=download))
+    await message_handler(router, "voice")(voice_message, SimpleNamespace(download=download))
     history_message = SimpleNamespace(
         from_user=SimpleNamespace(id=42),
         chat=SimpleNamespace(id=100, type="private"),
@@ -247,7 +251,7 @@ async def test_voice_to_event_to_history_integrated_path_with_service_doubles():
         voice=None,
         answer=AsyncMock(return_value=SimpleNamespace(chat=SimpleNamespace(id=100), message_id=21)),
     )
-    await router.message.handlers[2].callback(history_message)
+    await message_handler(router, "text")(history_message)
 
     assert "Observação reportada" in voice_message.answer.call_args.args[0]
     assert store.tabs["06_Eventos"][-1]["processing_status"] == "APPLIED"
@@ -287,7 +291,7 @@ async def test_voice_transcription_failure_is_audited_without_persisting_audio_b
     async def download(_voice, *, destination):
         destination.write(b"audio-must-not-be-stored")
 
-    await router.message.handlers[1].callback(voice_message, SimpleNamespace(download=download))
+    await message_handler(router, "voice")(voice_message, SimpleNamespace(download=download))
 
     conversation = store.tabs["18_Conversas"][-1]
     audit = store.tabs["99_Audit_Log"][-1]

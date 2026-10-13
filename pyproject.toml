@@ -26,6 +26,7 @@ agro-notes-evaluate-stt = "agro_notes.evaluate_transcription_models:main"
 agro-notes-field-eval = "agro_notes.field_eval:main"
 agro-notes-smoke-telegram = "agro_notes.smoke_telegram:main"
 agro-notes-smoke-sheets = "agro_notes.smoke_google_sheets:main"
+agro-notes-access = "agro_notes.access_admin:main"
 
 [project.optional-dependencies]
 dev = [
