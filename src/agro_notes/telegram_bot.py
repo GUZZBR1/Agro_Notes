@@ -272,7 +272,7 @@ def build_router(
             stripped = raw_text.strip()
             command, _, argument = stripped.partition(" ")
             is_access_command = command.casefold().split("@", maxsplit=1)[0] == "/acesso"
-            is_plain_code = bool(normalize_code(stripped))
+            is_plain_code = stripped.upper().startswith("AGRO-") and bool(normalize_code(stripped))
             if is_access_command or is_plain_code:
                 if await access.is_authorized(message.from_user.id):
                     await message.answer("Seu acesso já está ativo.")

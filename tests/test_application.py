@@ -956,6 +956,52 @@ async def test_missing_weight_is_clarified_then_applied_as_one_command():
     assert [row["state"] for row in store.tabs["18_Conversas"][-2:]] == ["NEEDS_CLARIFICATION", "COMPLETED"]
 
 
+async def test_bare_hex_identifier_completes_an_authorized_clarification():
+    store = MemoryStore()
+    identifier = "0123456789ABCDEF0123"
+    store.tabs["03_Identificadores_Animal"][0]["value"] = identifier
+    clarification = InterpretationProposal(events=[EventProposal(
+        event_type="HEALTH_OBSERVATION", payload={"observation": "manca"},
+        time_expression="hoje", confidence=0.98,
+    )])
+    completed = InterpretationProposal(events=[EventProposal(
+        event_type="HEALTH_OBSERVATION", payload={"animal_identifier": identifier, "observation": "manca"},
+        time_expression="hoje", confidence=0.98,
+    )])
+    processor = MVPProcessor(
+        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"),
+        store, SequenceInterpreter(clarification, completed),
+    )
+
+    first = await receive(processor)
+    second = await processor.receive(
+        42, identifier, source="text", message_id="chat:2",
+        captured_at=datetime(2026, 10, 13, tzinfo=UTC).isoformat(),
+        device_timezone=None, source_reference=None,
+    )
+
+    assert "Preciso esclarecer" in first.text
+    assert second.text.startswith("✅")
+    assert store.tabs["06_Eventos"][-1]["command_id"] == "tg:42:chat:1"
+    assert store.tabs["18_Conversas"][-1]["state"] == "COMPLETED"
+
+
+@pytest.mark.parametrize("text", ["AGRO-0123456789ABCDEF0123", "/ACESSO 0123456789ABCDEF0123"])
+async def test_processor_does_not_persist_explicit_access_codes(text):
+    store = MemoryStore()
+    processor = make_processor(store)
+
+    result = await processor.receive(
+        42, text, source="text", message_id="chat:1",
+        captured_at=datetime(2026, 10, 13, tzinfo=UTC).isoformat(),
+        device_timezone=None, source_reference=None,
+    )
+
+    assert result.text == "Código de acesso não pode ser usado como registro."
+    assert not store.tabs["18_Conversas"]
+    assert not store.tabs["06_Eventos"]
+
+
 @pytest.mark.asyncio
 async def test_multiple_clarifications_preserve_original_request_and_prior_answers():
     store = MemoryStore()

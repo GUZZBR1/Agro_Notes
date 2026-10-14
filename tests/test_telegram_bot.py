@@ -200,14 +200,26 @@ async def test_openai_transcription_uses_memory_and_portuguese():
     assert create.call_args.kwargs["language"] == "pt"
 
 
-async def test_authorized_code_replays_never_reach_processor():
+async def test_authorized_explicit_access_codes_never_reach_processor():
     proc = processor()
     access = SimpleNamespace(is_authorized=AsyncMock(return_value=True), redeem=AsyncMock())
     router = build_router(proc, settings(), access=access)
     handler = message_handler(router, "text")
 
-    await handler(message(text="0123456789ABCDEF0123"))
+    await handler(message(text="AGRO-0123456789ABCDEF0123"))
     await handler(message(text="/ACESSO 0123456789ABCDEF0123"))
 
     proc.receive.assert_not_awaited()
+    access.redeem.assert_not_awaited()
+
+
+async def test_authorized_bare_hex_identifier_reaches_processor():
+    proc = processor()
+    access = SimpleNamespace(is_authorized=AsyncMock(return_value=True), redeem=AsyncMock())
+    router = build_router(proc, settings(), access=access)
+    identifier = "0123456789ABCDEF0123"
+
+    await message_handler(router, "text")(message(text=identifier))
+
+    assert proc.receive.await_args.args == (42, identifier)
     access.redeem.assert_not_awaited()

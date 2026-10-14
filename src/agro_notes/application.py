@@ -87,7 +87,9 @@ class MVPProcessor:
         source_reference: str | None,
         received_at: str | None = None,
     ) -> BotReply:
-        if normalize_code(text) or text.strip().casefold().startswith("/acesso"):
+        stripped = text.strip()
+        is_prefixed_code = stripped.upper().startswith("AGRO-") and normalize_code(stripped)
+        if is_prefixed_code or stripped.casefold().startswith("/acesso"):
             return BotReply("Código de acesso não pode ser usado como registro.")
         received_at = received_at or datetime.now(UTC).isoformat()
         async with self._writer_lock:
