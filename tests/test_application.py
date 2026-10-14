@@ -153,6 +153,10 @@ def receive(processor, message_id="chat:1", source="text"):
     )
 
 
+def message_handler(router, name):
+    return next(handler.callback for handler in router.message.handlers if handler.callback.__name__ == name)
+
+
 def test_trusted_context_rejects_invalid_or_timezone_free_capture_time():
     processor = make_processor(MemoryStore())
 
@@ -240,10 +244,7 @@ async def test_voice_to_event_to_history_integrated_path_with_service_doubles():
     async def download(_voice, *, destination):
         destination.write(b"voice-audio")
 
-    voice_handler = next(
-        handler.callback for handler in router.message.handlers if handler.callback.__name__ == "voice"
-    )
-    await voice_handler(voice_message, SimpleNamespace(download=download))
+    await message_handler(router, "voice")(voice_message, SimpleNamespace(download=download))
     history_message = SimpleNamespace(
         from_user=SimpleNamespace(id=42),
         chat=SimpleNamespace(id=100, type="private"),
@@ -253,8 +254,7 @@ async def test_voice_to_event_to_history_integrated_path_with_service_doubles():
         voice=None,
         answer=AsyncMock(return_value=SimpleNamespace(chat=SimpleNamespace(id=100), message_id=21)),
     )
-    text_handler = next(handler.callback for handler in router.message.handlers if handler.callback.__name__ == "text")
-    await text_handler(history_message)
+    await message_handler(router, "text")(history_message)
 
     assert "Observação reportada" in voice_message.answer.call_args.args[0]
     assert store.tabs["06_Eventos"][-1]["processing_status"] == "APPLIED"
@@ -294,10 +294,7 @@ async def test_voice_transcription_failure_is_audited_without_persisting_audio_b
     async def download(_voice, *, destination):
         destination.write(b"audio-must-not-be-stored")
 
-    voice_handler = next(
-        handler.callback for handler in router.message.handlers if handler.callback.__name__ == "voice"
-    )
-    await voice_handler(voice_message, SimpleNamespace(download=download))
+    await message_handler(router, "voice")(voice_message, SimpleNamespace(download=download))
 
     conversation = store.tabs["18_Conversas"][-1]
     audit = store.tabs["99_Audit_Log"][-1]
@@ -960,6 +957,52 @@ async def test_missing_weight_is_clarified_then_applied_as_one_command():
     assert len(store.tabs["06_Eventos"]) == 2
     assert store.tabs["06_Eventos"][-1]["command_id"] == "tg:42:chat:1"
     assert [row["state"] for row in store.tabs["18_Conversas"][-2:]] == ["NEEDS_CLARIFICATION", "COMPLETED"]
+
+
+async def test_bare_hex_identifier_completes_an_authorized_clarification():
+    store = MemoryStore()
+    identifier = "0123456789ABCDEF0123"
+    store.tabs["03_Identificadores_Animal"][0]["value"] = identifier
+    clarification = InterpretationProposal(events=[EventProposal(
+        event_type="HEALTH_OBSERVATION", payload={"observation": "manca"},
+        time_expression="hoje", confidence=0.98,
+    )])
+    completed = InterpretationProposal(events=[EventProposal(
+        event_type="HEALTH_OBSERVATION", payload={"animal_identifier": identifier, "observation": "manca"},
+        time_expression="hoje", confidence=0.98,
+    )])
+    processor = MVPProcessor(
+        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"),
+        store, SequenceInterpreter(clarification, completed),
+    )
+
+    first = await receive(processor)
+    second = await processor.receive(
+        42, identifier, source="text", message_id="chat:2",
+        captured_at=datetime(2026, 10, 13, tzinfo=UTC).isoformat(),
+        device_timezone=None, source_reference=None,
+    )
+
+    assert "Preciso esclarecer" in first.text
+    assert second.text.startswith("✅")
+    assert store.tabs["06_Eventos"][-1]["command_id"] == "tg:42:chat:1"
+    assert store.tabs["18_Conversas"][-1]["state"] == "COMPLETED"
+
+
+@pytest.mark.parametrize("text", ["AGRO-0123456789ABCDEF0123", "/ACESSO 0123456789ABCDEF0123"])
+async def test_processor_does_not_persist_explicit_access_codes(text):
+    store = MemoryStore()
+    processor = make_processor(store)
+
+    result = await processor.receive(
+        42, text, source="text", message_id="chat:1",
+        captured_at=datetime(2026, 10, 13, tzinfo=UTC).isoformat(),
+        device_timezone=None, source_reference=None,
+    )
+
+    assert result.text == "Código de acesso não pode ser usado como registro."
+    assert not store.tabs["18_Conversas"]
+    assert not store.tabs["06_Eventos"]
 
 
 @pytest.mark.asyncio

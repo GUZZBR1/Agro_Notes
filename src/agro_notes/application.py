@@ -10,7 +10,7 @@ from typing import Any, Protocol
 from uuid import NAMESPACE_URL, uuid5
 from zoneinfo import ZoneInfo
 
-from .access_control import AccessService
+from .access_control import AccessService, normalize_code
 from .domain import (
     EventType,
     InterpretationProposal,
@@ -102,6 +102,8 @@ class MVPProcessor:
                 return BotReply("Não consegui identificar a fazenda autorizada para a exportação.")
             try:
                 async with self._writer_lock:
+                    if not await self._authorized(user_id):
+                        return BotReply("Acesso não autorizado.")
                     document = await asyncio.to_thread(
                         build_property_export, self.store, self.settings.farm_property_id, export_intent.kind
                     )
@@ -133,8 +135,14 @@ class MVPProcessor:
                 suffix = f"\n{link}" if link else ""
                 return BotReply(f"Planilha salva no Google Drive em Agro Notes/Exportações.{suffix}")
             return BotReply("Aqui está a planilha da fazenda.", document=document)
+        stripped = text.strip()
+        is_prefixed_code = stripped.upper().startswith("AGRO-") and normalize_code(stripped)
+        if is_prefixed_code or stripped.casefold().startswith("/acesso"):
+            return BotReply("Código de acesso não pode ser usado como registro.")
         received_at = received_at or datetime.now(UTC).isoformat()
         async with self._writer_lock:
+            if not await self._authorized(user_id):
+                return BotReply("Acesso não autorizado.")
             command_id = f"tg:{user_id}:{message_id}"
             previous = await self._store("find_event_by_command", command_id)
             if previous:
@@ -403,6 +411,8 @@ class MVPProcessor:
         if not await self._authorized(user_id):
             return
         async with self._writer_lock:
+            if not await self._authorized(user_id):
+                return
             command_id = f"tg:{user_id}:{message_id}"
             if await self._conversation_by_message(message_id):
                 return
@@ -462,6 +472,8 @@ class MVPProcessor:
         if not await self._authorized(user_id):
             raise ValueError("User is not authorized.")
         async with self._writer_lock:
+            if not await self._authorized(user_id):
+                raise ValueError("User is not authorized.")
             row = await self._latest_conversation(pending_id)
             if not row or int(row.get("user_id", -1)) != user_id or row.get("state") != "WAITING_CONFIRMATION":
                 raise ValueError("No confirmation is waiting for this user.")
@@ -481,6 +493,8 @@ class MVPProcessor:
         if not await self._authorized(user_id):
             return BotReply("Acesso não autorizado.")
         async with self._writer_lock:
+            if not await self._authorized(user_id):
+                return BotReply("Acesso não autorizado.")
             row = await self._latest_conversation(pending_id)
             if not row or int(row.get("user_id", -1)) != user_id:
                 return BotReply("Confirmação expirada ou não encontrada.")
@@ -530,6 +544,8 @@ class MVPProcessor:
         if not await self._authorized(user_id):
             return BotReply("Acesso não autorizado.")
         async with self._writer_lock:
+            if not await self._authorized(user_id):
+                return BotReply("Acesso não autorizado.")
             row = await self._latest_conversation(pending_id)
             if not row or int(row.get("user_id", -1)) != user_id:
                 return BotReply("Comando pendente não encontrado.")

@@ -18,7 +18,7 @@ MVP de captura de eventos de manejo animal por Telegram, com interpretação est
 4. Inicie com `uvicorn agro_notes.main:app --host 0.0.0.0 --port 8000 --workers 1 --no-access-log`. A inicialização cria abas vazias e cabeçalhos ausentes; ela para se encontrar cabeçalhos incompatíveis.
 5. Garanta saída HTTPS para Telegram, Google APIs e o provider de IA escolhido. Long polling não exige webhook público; o processo precisa permanecer ativo.
 
-O processo deve ter **um único worker**: o bloqueio de escrita é local ao processo, e o Google Sheets não oferece transação nem restrição única. `GET /health` retorna `503` se o polling do Telegram estiver parado. O endpoint não valida a saúde posterior da planilha ou do provider de IA.
+O bot deve ter **um único worker**: o Google Sheets não oferece transação nem restrição única para os registros do MVP. O acesso por convite usa bloqueio de arquivo compartilhado; execute o bot e o CLI administrativo no mesmo host, com o mesmo usuário do sistema e diretório temporário. O cliente Sheets serializa chamadas ao transporte HTTP. `GET /health` retorna `503` se o polling do Telegram estiver parado. O endpoint não valida a saúde posterior da planilha ou do provider de IA.
 
 ## Fluxo
 

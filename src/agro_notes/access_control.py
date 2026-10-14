@@ -10,10 +10,21 @@ import asyncio
 import hashlib
 import hmac
 import secrets
+import tempfile
 import threading
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - exercised on Windows deployments
+    fcntl = None
+    import msvcrt
+else:
+    msvcrt = None
 
 INVALID_CODE_REPLY = "Código inválido ou indisponível."
 WAITING_REPLY = "Envie seu código de acesso em uma mensagem privada."
@@ -35,15 +46,21 @@ def _instant(value: Any) -> datetime | None:
 
 
 def normalize_code(value: str) -> str:
-    """Accept only the generated 32-hex-character invitation format."""
-    compact = value.strip().replace("-", "").replace(" ", "").upper()
-    if len(compact) != 32 or any(char not in "0123456789ABCDEF" for char in compact):
+    """Accept the generated 20-hex code, with optional AGRO prefix and separators."""
+    compact = value.strip().upper()
+    if compact.startswith("AGRO-"):
+        compact = compact[5:]
+    compact = compact.replace("-", "").replace(" ", "")
+    if len(compact) != 20 or any(char not in "0123456789ABCDEF" for char in compact):
         return ""
     return compact
 
 
 def hash_code(code: str) -> str:
-    return hashlib.sha256(normalize_code(code).encode("ascii")).hexdigest()
+    normalized = normalize_code(code)
+    if not normalized:
+        raise ValueError("Código de acesso inválido.")
+    return hashlib.sha256(normalized.encode("ascii")).hexdigest()
 
 
 class AccessService:
@@ -53,6 +70,31 @@ class AccessService:
         self.store = store
         self.settings = settings
         self._lock = threading.RLock()
+        sheet_key = hashlib.sha256(str(settings.google_sheet_id).encode("utf-8")).hexdigest()[:24]
+        self._process_lock_path = Path(tempfile.gettempdir()) / f"agro-notes-access-{sheet_key}.lock"
+        self._blocked_until: dict[int, datetime] = {}
+
+    @contextmanager
+    def _exclusive(self):
+        with self._lock:
+            with self._process_lock_path.open("a+b") as lock_file:
+                if fcntl:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                else:
+                    lock_file.seek(0)
+                    if not lock_file.read(1):
+                        lock_file.write(b"0")
+                        lock_file.flush()
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+                try:
+                    yield
+                finally:
+                    if fcntl:
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                    else:
+                        lock_file.seek(0)
+                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
 
     def _rows(self) -> list[dict[str, Any]]:
         return self.store.read_rows("Telegram_Access")
@@ -67,7 +109,9 @@ class AccessService:
             (
                 row
                 for row in reversed(rows)
-                if row.get("telegram_user_id") == str(user_id) and row.get("event_type") in {"USER_STATE", "REDEEMED"}
+                if row.get("telegram_user_id") == str(user_id)
+                and row.get("property_id") == self.settings.farm_property_id
+                and row.get("event_type") in {"USER_STATE", "REDEEMED"}
             ),
             None,
         )
@@ -77,8 +121,10 @@ class AccessService:
         if row:
             state = str(row.get("state", "")).upper()
             until = _instant(row.get("blocked_until"))
-            if state == "BLOCKED" and row.get("reason") == "FAILED_ATTEMPTS" and until and datetime.now(UTC) >= until:
-                return "WAITING_ACCESS_CODE"
+            if state == "BLOCKED" and row.get("reason") == "FAILED_ATTEMPTS" and until:
+                if datetime.now(UTC) >= until:
+                    return "WAITING_ACCESS_CODE"
+                self._blocked_until[user_id] = until
             return state or "UNREGISTERED"
         # One-time compatibility migration. Any later persisted state overrides it.
         if user_id in self.settings.allowed_user_ids:
@@ -95,9 +141,19 @@ class AccessService:
         return "UNREGISTERED"
 
     def _is_authorized(self, user_id: int) -> bool:
-        with self._lock:
+        with self._exclusive():
+            now = datetime.now(UTC)
+            cached_block = self._blocked_until.get(user_id)
+            if cached_block and now < cached_block:
+                return False
+            self._blocked_until.pop(user_id, None)
             rows = self._rows()
             current = self._latest_user(rows, user_id)
+            if current and str(current.get("state", "")).upper() == "BLOCKED":
+                blocked_until = _instant(current.get("blocked_until"))
+                if blocked_until and now < blocked_until:
+                    self._blocked_until[user_id] = blocked_until
+                    return False
             if not current:
                 return self._state(rows, user_id) == "AUTHORIZED"
             return (
@@ -110,7 +166,7 @@ class AccessService:
 
     def authorized_property_id(self, user_id: int) -> str | None:
         """Return the property bound to an active Telegram grant, never a caller-supplied value."""
-        with self._lock:
+        with self._exclusive():
             rows = self._rows()
             current = self._latest_user(rows, user_id)
             if current is None and self._state(rows, user_id) == "AUTHORIZED":
@@ -125,7 +181,11 @@ class AccessService:
             return None
 
     def _start(self, user_id: int, display_name: str = "", username: str = "") -> str:
-        with self._lock:
+        with self._exclusive():
+            blocked_until = self._blocked_until.get(user_id)
+            if blocked_until and datetime.now(UTC) < blocked_until:
+                return BLOCKED_REPLY
+            self._blocked_until.pop(user_id, None)
             rows = self._rows()
             state = self._state(rows, user_id)
             if state == "AUTHORIZED":
@@ -149,9 +209,13 @@ class AccessService:
         return await asyncio.to_thread(self._start, user_id, display_name, username)
 
     def _redeem(self, user_id: int, raw_code: str, display_name: str = "", username: str = "") -> str:
-        now = datetime.now(UTC)
-        with self._lock:
+        with self._exclusive():
+            cached_block = self._blocked_until.get(user_id)
+            if cached_block and datetime.now(UTC) < cached_block:
+                return BLOCKED_REPLY
+            self._blocked_until.pop(user_id, None)
             rows = self._rows()
+            now = datetime.now(UTC)
             state = self._state(rows, user_id)
             if state == "AUTHORIZED":
                 return AUTHORIZED_REPLY
@@ -185,6 +249,7 @@ class AccessService:
             ]
             if len(recent_attempts) >= MAX_ATTEMPTS:
                 until = now + COOLDOWN
+                self._blocked_until[user_id] = until
                 self._append(
                     event_type="USER_STATE",
                     telegram_user_id=str(user_id),
@@ -203,7 +268,11 @@ class AccessService:
             for row in rows:
                 if row.get("event_type") != "CODE_CREATED":
                     continue
-                matches = hmac.compare_digest(code_hash, str(row.get("code_hash", "")))
+                stored_hash = str(row.get("code_hash", ""))
+                valid_digest = len(stored_hash) == 64 and all(
+                    char in "0123456789abcdef" for char in stored_hash
+                )
+                matches = hmac.compare_digest(code_hash, stored_hash if valid_digest else "0" * 64)
                 compared = True
                 if matches:
                     code_row = row
@@ -215,6 +284,10 @@ class AccessService:
             revoked = any(row.get("event_type") == "CODE_REVOKED" for row in code_events)
             uses = sum(row.get("event_type") == "REDEEMED" for row in code_events)
             expires = _instant(code_row.get("expires_at")) if code_row else None
+            try:
+                max_uses = int(code_row.get("max_uses") or 0) if code_row else 0
+            except (TypeError, ValueError):
+                max_uses = 0
             eligible = bool(
                 code_row
                 and not revoked
@@ -222,7 +295,8 @@ class AccessService:
                 and now < expires
                 and code_row.get("property_id") == self.settings.farm_property_id
                 and code_row.get("role") == "FARMER"
-                and uses < int(code_row.get("max_uses") or 0)
+                and max_uses > 0
+                and uses < max_uses
             )
             if not eligible:
                 self._append(
@@ -235,6 +309,7 @@ class AccessService:
                 attempts = len(recent_attempts) + 1
                 if attempts >= MAX_ATTEMPTS:
                     until = now + COOLDOWN
+                    self._blocked_until[user_id] = until
                     self._append(
                         event_type="USER_STATE",
                         telegram_user_id=str(user_id),
@@ -274,7 +349,11 @@ class AccessService:
 
     async def set_waiting(self, user_id: int) -> str:
         def cancel() -> str:
-            with self._lock:
+            with self._exclusive():
+                blocked_until = self._blocked_until.get(user_id)
+                if blocked_until and datetime.now(UTC) < blocked_until:
+                    return BLOCKED_REPLY
+                self._blocked_until.pop(user_id, None)
                 rows = self._rows()
                 state = self._state(rows, user_id)
                 if state == "AUTHORIZED":
@@ -295,7 +374,7 @@ class AccessService:
         return await asyncio.to_thread(cancel)
 
     def revoke_code(self, code_id: str, actor_id: str = "admin") -> None:
-        with self._lock:
+        with self._exclusive():
             if not any(
                 row.get("event_type") == "CODE_CREATED" and row.get("access_code_id") == code_id for row in self._rows()
             ):
@@ -303,7 +382,7 @@ class AccessService:
             self._append(event_type="CODE_REVOKED", access_code_id=code_id, actor_id=str(actor_id), state="REVOKED")
 
     def revoke_user(self, user_id: int, actor_id: str = "admin") -> None:
-        with self._lock:
+        with self._exclusive():
             rows = self._rows()
             current = self._latest_user(rows, user_id)
             if not current or current.get("state") != "AUTHORIZED":
@@ -328,25 +407,25 @@ def generate_invitation(
         raise ValueError("expires_at precisa ser futuro e incluir fuso horário")
     if not 1 <= max_uses <= 1000:
         raise ValueError("max_uses precisa estar entre 1 e 1000")
-    code = secrets.token_hex(16).upper()
+    code = secrets.token_hex(10).upper()
     code_id = str(uuid4())
-    with threading.RLock():
-        store.append_rows(
-            "Telegram_Access",
-            [
-                {
-                    "event_id": str(uuid4()),
-                    "event_type": "CODE_CREATED",
-                    "property_id": settings.farm_property_id,
-                    "role": "FARMER",
-                    "state": "AVAILABLE",
-                    "access_code_id": code_id,
-                    "code_hash": hash_code(code),
-                    "created_at": datetime.now(UTC).isoformat(),
-                    "expires_at": expires_at.astimezone(UTC).isoformat(),
-                    "max_uses": str(max_uses),
-                    "actor_id": str(actor_id),
-                }
-            ],
-        )
-    return code_id, "-".join(code[index : index + 8] for index in range(0, 32, 8))
+    store.append_rows(
+        "Telegram_Access",
+        [
+            {
+                "event_id": str(uuid4()),
+                "event_type": "CODE_CREATED",
+                "property_id": settings.farm_property_id,
+                "role": "FARMER",
+                "state": "AVAILABLE",
+                "access_code_id": code_id,
+                "code_hash": hash_code(code),
+                "created_at": datetime.now(UTC).isoformat(),
+                "expires_at": expires_at.astimezone(UTC).isoformat(),
+                "max_uses": str(max_uses),
+                "actor_id": str(actor_id),
+            }
+        ],
+    )
+    grouped_code = "-".join(code[index : index + 5] for index in range(0, 20, 5))
+    return code_id, f"AGRO-{grouped_code}"

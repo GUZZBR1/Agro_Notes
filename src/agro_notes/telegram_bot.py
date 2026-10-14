@@ -11,7 +11,7 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from .access_control import AccessService
+from .access_control import AccessService, normalize_code
 from .exports import ExportDocument
 from .google_drive import DriveConfigurationError, match_drive_connection_intent
 from .provider_factory import build_transcriber
@@ -242,7 +242,7 @@ def build_router(
                 "e outros exigem sua confirmação."
             )
 
-    @router.message(Command("acesso"))
+    @router.message(Command("acesso", ignore_case=True))
     async def access_code(message: Message) -> None:
         if message.chat.type != "private":
             await message.answer("Envie o código somente em conversa privada com o bot.")
@@ -332,14 +332,27 @@ def build_router(
         if message.chat.type != "private":
             await message.answer("Por segurança, use o chat privado do bot para acessar dados da fazenda.")
             return
-        if access and message.from_user and not await access.is_authorized(message.from_user.id):
-            raw = message.text or ""
-            if raw.strip().lower() == "/cancel":
-                await message.answer(await access.set_waiting(message.from_user.id))
-            else:
-                display, username = user_display(message)
-                await message.answer(await access.redeem(message.from_user.id, raw, display, username))
-            return
+        raw_text = message.text or ""
+        if access and message.from_user:
+            stripped = raw_text.strip()
+            command, _, argument = stripped.partition(" ")
+            is_access_command = command.casefold().split("@", maxsplit=1)[0] == "/acesso"
+            is_plain_code = stripped.upper().startswith("AGRO-") and bool(normalize_code(stripped))
+            if is_access_command or is_plain_code:
+                if await access.is_authorized(message.from_user.id):
+                    await message.answer("Seu acesso já está ativo.")
+                else:
+                    display, username = user_display(message)
+                    code = argument.strip() if is_access_command else stripped
+                    await message.answer(await access.redeem(message.from_user.id, code, display, username))
+                return
+            if not await access.is_authorized(message.from_user.id):
+                if stripped.casefold() == "/cancel":
+                    await message.answer(await access.set_waiting(message.from_user.id))
+                else:
+                    display, username = user_display(message)
+                    await message.answer(await access.redeem(message.from_user.id, raw_text, display, username))
+                return
         if not await authorize(message):
             return
         assert message.from_user is not None and message.text is not None
