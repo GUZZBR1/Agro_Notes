@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from uuid import NAMESPACE_URL, uuid5
 from zoneinfo import ZoneInfo
 
+from .access_control import AccessService, normalize_code
 from .domain import (
     EventType,
     InterpretationProposal,
@@ -57,12 +58,19 @@ class MVPProcessor:
         store: EventStore,
         interpreter: Interpreter,
         validator: DeterministicValidator | None = None,
+        access: AccessService | None = None,
     ) -> None:
         self.settings = settings
         self.store = store
         self.interpreter = interpreter
         self.validator = validator or DeterministicValidator(settings.min_interpretation_confidence)
+        self.access = access
         self._writer_lock = asyncio.Lock()
+
+    async def _authorized(self, user_id: int) -> bool:
+        if self.access is not None:
+            return await self.access.is_authorized(user_id)
+        return user_id in self.settings.allowed_user_ids
 
     async def _store(self, method: str, *args: Any, **kwargs: Any) -> Any:
         return await asyncio.to_thread(getattr(self.store, method), *args, **kwargs)
@@ -79,10 +87,14 @@ class MVPProcessor:
         source_reference: str | None,
         received_at: str | None = None,
     ) -> BotReply:
-        if user_id not in self.settings.allowed_user_ids:
-            return BotReply("Acesso não autorizado.")
+        stripped = text.strip()
+        is_prefixed_code = stripped.upper().startswith("AGRO-") and normalize_code(stripped)
+        if is_prefixed_code or stripped.casefold().startswith("/acesso"):
+            return BotReply("Código de acesso não pode ser usado como registro.")
         received_at = received_at or datetime.now(UTC).isoformat()
         async with self._writer_lock:
+            if not await self._authorized(user_id):
+                return BotReply("Acesso não autorizado.")
             command_id = f"tg:{user_id}:{message_id}"
             previous = await self._store("find_event_by_command", command_id)
             if previous:
@@ -349,9 +361,9 @@ class MVPProcessor:
         failure_code: str,
         response: str,
     ) -> None:
-        if user_id not in self.settings.allowed_user_ids:
-            return
         async with self._writer_lock:
+            if not await self._authorized(user_id):
+                return
             command_id = f"tg:{user_id}:{message_id}"
             if await self._conversation_by_message(message_id):
                 return
@@ -409,6 +421,8 @@ class MVPProcessor:
 
     async def bind_confirmation(self, user_id: int, pending_id: str, *, chat_id: int, message_id: int) -> None:
         async with self._writer_lock:
+            if not await self._authorized(user_id):
+                raise ValueError("User is not authorized.")
             row = await self._latest_conversation(pending_id)
             if not row or int(row.get("user_id", -1)) != user_id or row.get("state") != "WAITING_CONFIRMATION":
                 raise ValueError("No confirmation is waiting for this user.")
@@ -425,9 +439,9 @@ class MVPProcessor:
     async def confirm(
         self, user_id: int, pending_id: str, *, source_chat_id: int | None = None, source_message_id: int | None = None
     ) -> BotReply:
-        if user_id not in self.settings.allowed_user_ids:
-            return BotReply("Acesso não autorizado.")
         async with self._writer_lock:
+            if not await self._authorized(user_id):
+                return BotReply("Acesso não autorizado.")
             row = await self._latest_conversation(pending_id)
             if not row or int(row.get("user_id", -1)) != user_id:
                 return BotReply("Confirmação expirada ou não encontrada.")
@@ -473,9 +487,9 @@ class MVPProcessor:
     async def cancel(
         self, user_id: int, pending_id: str, *, source_chat_id: int | None = None, source_message_id: int | None = None
     ) -> BotReply:
-        if user_id not in self.settings.allowed_user_ids:
-            return BotReply("Acesso não autorizado.")
         async with self._writer_lock:
+            if not await self._authorized(user_id):
+                return BotReply("Acesso não autorizado.")
             row = await self._latest_conversation(pending_id)
             if not row or int(row.get("user_id", -1)) != user_id:
                 return BotReply("Comando pendente não encontrado.")
@@ -1442,30 +1456,7 @@ class MVPProcessor:
                     }
                 ],
             )
-        users = await self._store("read_rows", "19_Usuarios")
-        actor = str(user_id)
-        if not any(
-            row.get("user_id") == actor
-            and row.get("property_id") == self.settings.farm_property_id
-            and str(row.get("active")).upper() in {"TRUE", "1"}
-            for row in users
-        ):
-            await self._store(
-                "append_rows",
-                "19_Usuarios",
-                [
-                    {
-                        "user_id": actor,
-                        "display_name": "",
-                        "role": "FARMER",
-                        "property_id": self.settings.farm_property_id,
-                        "permissions_profile": "MVP_WHITELIST",
-                        "active": True,
-                        "valid_from": datetime.now(UTC).isoformat(),
-                        "valid_to": "",
-                    }
-                ],
-            )
+        # Telegram_Access is authoritative; do not auto-create a trusted profile.
 
     def _trusted_context(
         self, user_id: int, command_id: str, captured_at: str, *, inferred_captured_at: str | None = None

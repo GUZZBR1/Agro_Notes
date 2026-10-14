@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from aiogram import Bot, Dispatcher
 from fastapi import FastAPI, HTTPException
 
+from .access_control import AccessService
 from .application import MVPProcessor
 from .provider_factory import build_interpreter, build_transcriber
 from .settings import get_settings
@@ -24,6 +25,7 @@ async def lifespan(app: FastAPI):
     settings.validate_runtime()
     store = GoogleSheetsStore.from_credentials(settings)
     await asyncio.to_thread(store.bootstrap)
+    access = AccessService(store, settings)
     transcriber = None
     interpreter = None
     bot = None
@@ -31,10 +33,10 @@ async def lifespan(app: FastAPI):
     polling = None
     try:
         interpreter = build_interpreter(settings)
-        processor = MVPProcessor(settings, store, interpreter)
+        processor = MVPProcessor(settings, store, interpreter, access=access)
         transcriber = build_transcriber(settings)
         dispatcher = Dispatcher()
-        dispatcher.include_router(build_router(processor, settings, transcriber))
+        dispatcher.include_router(build_router(processor, settings, transcriber, access))
         bot = Bot(settings.telegram_bot_token)
         polling = asyncio.create_task(dispatcher.start_polling(bot))
         app.state.store = store

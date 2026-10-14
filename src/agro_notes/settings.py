@@ -62,7 +62,6 @@ class Settings(BaseSettings):
             name
             for name, value in (
                 ("TELEGRAM_BOT_TOKEN", self.telegram_bot_token),
-                ("TELEGRAM_ALLOWED_USER_IDS", self.telegram_allowed_user_ids),
                 ("GOOGLE_SHEET_ID", self.google_sheet_id),
                 ("GROQ_API_KEY" if self.ai_provider == "groq" else "OPENAI_API_KEY",
                  self.groq_api_key if self.ai_provider == "groq" else self.openai_api_key),
@@ -71,8 +70,6 @@ class Settings(BaseSettings):
         ]
         if missing:
             raise ValueError("Configuração ausente: " + ", ".join(missing))
-        if not self.allowed_user_ids:
-            raise ValueError("A whitelist Telegram precisa ter pelo menos um usuário.")
 
     def validate_provider_configuration(self) -> None:
         if self.ai_provider not in {"groq", "openai"}:

@@ -42,6 +42,10 @@ def processor():
     )
 
 
+def message_handler(router, name):
+    return next(handler.callback for handler in router.message.handlers if handler.callback.__name__ == name)
+
+
 def test_whitelist_and_actual_download_cap():
     assert is_allowed(42, settings())
     assert not is_allowed(99, settings())
@@ -73,9 +77,9 @@ async def test_unauthorized_text_audio_callbacks_never_process():
     transcriber = SimpleNamespace(transcribe=AsyncMock())
     router = build_router(proc, settings(), transcriber)
     msg = message(user_id=99)
-    await router.message.handlers[0].callback(msg)
-    await router.message.handlers[1].callback(msg, SimpleNamespace(download=AsyncMock()))
-    await router.message.handlers[2].callback(msg)
+    await message_handler(router, "start")(msg)
+    await message_handler(router, "voice")(msg, SimpleNamespace(download=AsyncMock()))
+    await message_handler(router, "text")(msg)
     query = SimpleNamespace(from_user=SimpleNamespace(id=99), answer=AsyncMock())
     await router.callback_query.handlers[0].callback(query)
     proc.receive.assert_not_awaited()
@@ -91,7 +95,7 @@ async def test_voice_transcription_forwarded_with_message_key():
     async def download(_voice, *, destination):
         destination.write(b"ogg-bytes")
 
-    await router.message.handlers[1].callback(
+    await message_handler(router, "voice")(
         message(voice=SimpleNamespace(file_size=9, file_id="file-1")),
         SimpleNamespace(download=download),
     )
@@ -113,7 +117,7 @@ async def test_callbacks_use_persisted_command_id_and_bind_reply_message(monkeyp
     proc = processor()
     router = build_router(proc, settings(), SimpleNamespace(transcribe=AsyncMock()))
     msg = message()
-    await router.message.handlers[2].callback(msg)
+    await message_handler(router, "text")(msg)
     data = msg.answer.call_args.kwargs["reply_markup"].inline_keyboard[0][button_index].callback_data
     assert data == f"{action}:pending-1"
     proc.bind_confirmation.assert_awaited_once_with(42, "pending-1", chat_id=100, message_id=20)
@@ -158,7 +162,7 @@ async def test_group_chat_is_rejected_before_processing():
     router = build_router(proc, settings(), SimpleNamespace(transcribe=AsyncMock()))
     msg = message()
     msg.chat.type = "group"
-    await router.message.handlers[2].callback(msg)
+    await message_handler(router, "text")(msg)
 
     proc.receive.assert_not_awaited()
     msg.answer.assert_awaited_once()
@@ -168,7 +172,7 @@ async def test_pending_callback_data_survives_router_recreation(monkeypatch):
     proc = processor()
     first_router = build_router(proc, settings(), SimpleNamespace(transcribe=AsyncMock()))
     msg = message()
-    await first_router.message.handlers[2].callback(msg)
+    await message_handler(first_router, "text")(msg)
     data = msg.answer.call_args.kwargs["reply_markup"].inline_keyboard[0][0].callback_data
 
     second_router = build_router(proc, settings(), SimpleNamespace(transcribe=AsyncMock()))
@@ -194,3 +198,28 @@ async def test_openai_transcription_uses_memory_and_portuguese():
     assert result.metadata.outcome.value == "SUCCESS"
     assert create.call_args.kwargs["file"] == ("voice.ogg", b"ogg", "audio/ogg")
     assert create.call_args.kwargs["language"] == "pt"
+
+
+async def test_authorized_explicit_access_codes_never_reach_processor():
+    proc = processor()
+    access = SimpleNamespace(is_authorized=AsyncMock(return_value=True), redeem=AsyncMock())
+    router = build_router(proc, settings(), access=access)
+    handler = message_handler(router, "text")
+
+    await handler(message(text="AGRO-0123456789ABCDEF0123"))
+    await handler(message(text="/ACESSO 0123456789ABCDEF0123"))
+
+    proc.receive.assert_not_awaited()
+    access.redeem.assert_not_awaited()
+
+
+async def test_authorized_bare_hex_identifier_reaches_processor():
+    proc = processor()
+    access = SimpleNamespace(is_authorized=AsyncMock(return_value=True), redeem=AsyncMock())
+    router = build_router(proc, settings(), access=access)
+    identifier = "0123456789ABCDEF0123"
+
+    await message_handler(router, "text")(message(text=identifier))
+
+    assert proc.receive.await_args.args == (42, identifier)
+    access.redeem.assert_not_awaited()

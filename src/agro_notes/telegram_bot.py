@@ -8,9 +8,10 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from .access_control import AccessService, normalize_code
 from .provider_factory import build_transcriber
 from .settings import Settings
 from .transcription import Transcriber
@@ -94,7 +95,12 @@ async def download_voice(bot: Bot, message: Message, max_bytes: int) -> bytes:
         return buffer.getvalue()
 
 
-def build_router(processor: Processor, settings: Settings, transcriber: Transcriber | None = None) -> Router:
+def build_router(
+    processor: Processor,
+    settings: Settings,
+    transcriber: Transcriber | None = None,
+    access: AccessService | None = None,
+) -> Router:
     router = Router(name="agro_notes")
     owns_transcriber = transcriber is None
     locks: dict[int, asyncio.Lock] = {}
@@ -137,10 +143,22 @@ def build_router(processor: Processor, settings: Settings, transcriber: Transcri
         if message.chat.type != "private":
             await message.answer("Por segurança, use o chat privado do bot para acessar dados da fazenda.")
             return False
-        if not is_allowed(message.from_user.id if message.from_user else None, settings):
+        user_id = message.from_user.id if message.from_user else None
+        allowed = (
+            await access.is_authorized(user_id)
+            if access and user_id is not None
+            else is_allowed(user_id, settings)
+        )
+        if not allowed:
             await message.answer("Acesso não autorizado.")
             return False
         return True
+
+    def user_display(message: Message) -> tuple[str, str]:
+        user = message.from_user
+        if user is None:
+            return "", ""
+        return (" ".join(part for part in (user.first_name, user.last_name) if part), user.username or "")
 
     async def audit_voice_failure(
         message: Message, user_id: int, received_at: str, failure_code: str, response: str
@@ -160,16 +178,43 @@ def build_router(processor: Processor, settings: Settings, transcriber: Transcri
 
     @router.message(CommandStart())
     async def start(message: Message) -> None:
-        if await authorize(message):
+        if message.chat.type != "private":
+            await message.answer("Por segurança, inicie o bot em uma conversa privada.")
+            return
+        if access and message.from_user:
+            display, username = user_display(message)
+            await message.answer(await access.start(message.from_user.id, display, username))
+        elif await authorize(message):
             await message.answer(
                 "Envie um texto ou áudio com a movimentação da fazenda. "
                 "Vou pedir esclarecimentos quando faltarem dados; alguns registros são gravados após validação "
                 "e outros exigem sua confirmação."
             )
 
+    @router.message(Command("acesso", ignore_case=True))
+    async def access_code(message: Message) -> None:
+        if message.chat.type != "private":
+            await message.answer("Envie o código somente em conversa privada com o bot.")
+            return
+        if not access or not message.from_user:
+            await message.answer("O cadastro por código não está disponível.")
+            return
+        pieces = (message.text or "").split(maxsplit=1)
+        if len(pieces) != 2:
+            await message.answer("Uso: /acesso SEU_CODIGO (somente nesta conversa privada).")
+            return
+        display, username = user_display(message)
+        await message.answer(await access.redeem(message.from_user.id, pieces[1], display, username))
+
     @router.message(F.voice)
     async def voice(message: Message, bot: Bot) -> None:
         nonlocal transcriber
+        if message.chat.type != "private":
+            await message.answer("Por segurança, use o chat privado do bot para acessar dados da fazenda.")
+            return
+        if access and message.from_user and not await access.is_authorized(message.from_user.id):
+            await message.answer("Para liberar o acesso, envie /start e depois /acesso SEU_CODIGO por texto.")
+            return
         if not await authorize(message):
             return
         assert message.from_user is not None
@@ -219,6 +264,30 @@ def build_router(processor: Processor, settings: Settings, transcriber: Transcri
 
     @router.message(F.text)
     async def text(message: Message) -> None:
+        if message.chat.type != "private":
+            await message.answer("Por segurança, use o chat privado do bot para acessar dados da fazenda.")
+            return
+        raw_text = message.text or ""
+        if access and message.from_user:
+            stripped = raw_text.strip()
+            command, _, argument = stripped.partition(" ")
+            is_access_command = command.casefold().split("@", maxsplit=1)[0] == "/acesso"
+            is_plain_code = stripped.upper().startswith("AGRO-") and bool(normalize_code(stripped))
+            if is_access_command or is_plain_code:
+                if await access.is_authorized(message.from_user.id):
+                    await message.answer("Seu acesso já está ativo.")
+                else:
+                    display, username = user_display(message)
+                    code = argument.strip() if is_access_command else stripped
+                    await message.answer(await access.redeem(message.from_user.id, code, display, username))
+                return
+            if not await access.is_authorized(message.from_user.id):
+                if stripped.casefold() == "/cancel":
+                    await message.answer(await access.set_waiting(message.from_user.id))
+                else:
+                    display, username = user_display(message)
+                    await message.answer(await access.redeem(message.from_user.id, raw_text, display, username))
+                return
         if not await authorize(message):
             return
         assert message.from_user is not None and message.text is not None
@@ -249,7 +318,8 @@ def build_router(processor: Processor, settings: Settings, transcriber: Transcri
     @router.callback_query()
     async def callback(query: CallbackQuery) -> None:
         user_id = query.from_user.id
-        if not is_allowed(user_id, settings):
+        allowed = await access.is_authorized(user_id) if access else is_allowed(user_id, settings)
+        if not allowed:
             await query.answer("Acesso não autorizado.", show_alert=True)
             return
         if not isinstance(query.message, Message) or query.message.chat.type != "private":
