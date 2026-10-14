@@ -10,6 +10,7 @@ from openpyxl import load_workbook
 
 from agro_notes.application import MVPProcessor
 from agro_notes.domain import EventProposal, InterpretationProposal
+from agro_notes.exports import build_property_export
 from agro_notes.interpreter import StructuredOutputInterpreter
 from agro_notes.settings import Settings
 from agro_notes.sheets import TAB_HEADERS
@@ -1235,6 +1236,70 @@ async def request_export(processor, text="/exportar", user_id=42, source="text")
         device_timezone=None,
         source_reference="voice-export" if source == "voice" else None,
     )
+
+
+@pytest.mark.parametrize("first_request", ["event", "export"])
+async def test_export_and_event_writes_share_the_same_lock(monkeypatch, first_request):
+    store = MemoryStore()
+    processor = make_processor(store)
+    blocked = asyncio.Event()
+    release = asyncio.Event()
+    competing_started = asyncio.Event()
+    operations = []
+    original_store = processor._store
+    original_to_thread = asyncio.to_thread
+
+    async def gated_store(method, *args, **kwargs):
+        operations.append("event")
+        if first_request == "event" and method == "append_target":
+            # The initial event exists, but its target and applied status do not.
+            blocked.set()
+            await release.wait()
+        return await original_store(method, *args, **kwargs)
+
+    async def gated_to_thread(function, *args, **kwargs):
+        if function is build_property_export:
+            operations.append("export")
+            if first_request == "export":
+                blocked.set()
+                await release.wait()
+        return await original_to_thread(function, *args, **kwargs)
+
+    monkeypatch.setattr(processor, "_store", gated_store)
+    monkeypatch.setattr(asyncio, "to_thread", gated_to_thread)
+
+    async def run_request(kind, *, competing=False):
+        if competing:
+            competing_started.set()
+        if kind == "event":
+            return await receive(processor)
+        return await request_export(processor)
+
+    first = asyncio.create_task(run_request(first_request))
+    competing = None
+    try:
+        await asyncio.wait_for(blocked.wait(), timeout=10)
+        before = list(operations)
+        second_request = "export" if first_request == "event" else "event"
+        competing = asyncio.create_task(run_request(second_request, competing=True))
+        # The competing request runs to its first suspension before this wakes.
+        await asyncio.wait_for(competing_started.wait(), timeout=10)
+        assert operations == before
+        assert not competing.done()
+    finally:
+        release.set()
+        tasks = [first] if competing is None else [first, competing]
+        results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=10)
+
+    exported = results[0] if first_request == "export" else results[1]
+    recorded = results[1] if first_request == "export" else results[0]
+    assert recorded.text.startswith("✅")
+    assert store.tabs["06_Eventos"][-1]["processing_status"] == "APPLIED"
+    assert len(store.tabs["07_Evento_Animais"]) == 1
+    assert exported.document is not None
+    workbook = load_workbook(BytesIO(exported.document.content))
+    observations = [value for sheet in workbook for row in sheet.values for value in row]
+    assert ("manca" in observations) == (first_request == "event")
 
 
 @pytest.mark.parametrize("text", ["/exportar", "exportar planilha", "me manda a planilha"])

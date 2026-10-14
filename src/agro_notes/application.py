@@ -87,9 +87,10 @@ class MVPProcessor:
             if not self.settings.farm_property_id.strip():
                 return BotReply("Não consegui identificar a fazenda autorizada para a exportação.")
             try:
-                document = await asyncio.to_thread(
-                    build_property_export, self.store, self.settings.farm_property_id, export_intent.kind
-                )
+                async with self._writer_lock:
+                    document = await asyncio.to_thread(
+                        build_property_export, self.store, self.settings.farm_property_id, export_intent.kind
+                    )
             except Exception as exc:
                 logger.error("Export generation failed (%s)", type(exc).__name__)
                 return BotReply("Não foi possível gerar a planilha. Tente novamente.")
