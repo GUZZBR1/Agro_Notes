@@ -172,7 +172,13 @@ class DurableTranscriptionQueue:
                 if latest and self._is_due(latest):
                     result = await self._process_locked(latest, bot, user_id, resumed=True)
                     if result:
-                        await self._send_background_reply(bot, latest, user_id, result)
+                        if latest.get("state") == "TRANSCRIBED" and self._metadata(latest).get("awaiting_delivery"):
+                            await self._send_background_reply(bot, latest, user_id, result)
+                        else:
+                            await send_bot_reply(
+                                bot, self.processor,
+                                int(str(latest["raw_text_ref"]).split(":", 1)[0]), user_id, result,
+                            )
             except Exception as exc:
                 logger.error(
                     "Transcription job failed command=%s (%s)",
@@ -188,6 +194,9 @@ class DurableTranscriptionQueue:
         state = str(job.get("state") or "PENDING_TRANSCRIPTION")
         metadata = self._metadata(job)
         notification_already_sent = bool(metadata.get("notification_sent"))
+        if state == "TRANSCRIBED" and metadata.get("awaiting_delivery"):
+            pending_id = metadata.get("pending_id")
+            return BotReply(str(job.get("response") or ""), str(pending_id) if pending_id else None)
         if state in {"PROCESSING_TRANSCRIPTION", "TRANSCRIBED", "RETRY_WAIT"}:
             # A restart after provider success safely reuses the saved transcript.
             transcript = str(job.get("transcript") or "") if state == "TRANSCRIBED" else ""
@@ -218,12 +227,15 @@ class DurableTranscriptionQueue:
             )
             if result.text.startswith("Não consegui concluir o registro."):
                 await self._save(job, "FAILED", metadata, transcript=transcript, response=result.text)
-            else:
-                await self.processor.mark_transcription_delivered(
-                    message_id, queue_metadata=metadata, transcript=transcript, response=result.text
-                )
+                return BotReply(result.text, result.pending_id)
             if resumed:
-                return BotReply("Pronto — consegui processar seu áudio.\n\n" + result.text, result.pending_id)
+                result = BotReply("Pronto — consegui processar seu áudio.\n\n" + result.text, result.pending_id)
+            if result.pending_id:
+                metadata["pending_id"] = result.pending_id
+            metadata["awaiting_delivery"] = True
+            await self._save(
+                job, "TRANSCRIBED", metadata, transcript=transcript, response=result.text
+            )
             return result
         except Exception as exc:
             error_class = self._error_class(exc)
@@ -377,7 +389,20 @@ class DurableTranscriptionQueue:
 
     @staticmethod
     def _is_due(job: dict) -> bool:
-        if job.get("state") in {"PENDING_TRANSCRIPTION", "PROCESSING_TRANSCRIPTION", "TRANSCRIBED"}:
+        state = job.get("state")
+        metadata = DurableTranscriptionQueue._metadata(job)
+        if state == "TRANSCRIBED" and metadata.get("awaiting_delivery"):
+            value = metadata.get("next_attempt_at")
+            if not value:
+                return True
+            try:
+                when = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                return when <= datetime.now(UTC)
+            except (TypeError, ValueError):
+                return False
+        if job.get("state") in {
+            "PENDING_TRANSCRIPTION", "PROCESSING_TRANSCRIPTION", "TRANSCRIBED"
+        }:
             return True
         value = DurableTranscriptionQueue._metadata(job).get("next_attempt_at")
         if not value:
@@ -392,8 +417,28 @@ class DurableTranscriptionQueue:
         try:
             chat_id = int(str(job["raw_text_ref"]).split(":", 1)[0])
             await send_bot_reply(bot, self.processor, chat_id, user_id, result)
-        except Exception:
+            await self._mark_delivered(job, result)
+        except Exception as exc:
             logger.error("Could not send transcription result command=%s", job.get("command_id", ""))
+            metadata = self._metadata(job)
+            attempts = int(metadata.get("delivery_retry_count", 0)) + 1
+            metadata.update(
+                delivery_retry_count=attempts,
+                next_attempt_at=(datetime.now(UTC) + timedelta(seconds=min(5 * (2 ** (attempts - 1)), 60))).isoformat(),
+                delivery_error=type(exc).__name__,
+            )
+            await self._save(
+                job, "TRANSCRIBED", metadata,
+                transcript=str(job.get("transcript") or ""), response=result.text,
+            )
+
+    async def _mark_delivered(self, job: dict, result: BotReply) -> None:
+        await self.processor.mark_transcription_delivered(
+            str(job.get("raw_text_ref") or ""),
+            queue_metadata=self._metadata(job),
+            transcript=str(job.get("transcript") or ""),
+            response=result.text,
+        )
 
 def is_allowed(user_id: int | None, settings: Settings) -> bool:
     return user_id is not None and user_id in settings.allowed_user_ids
@@ -544,7 +589,20 @@ def build_router(
                 if transcription_queue is not None:
                     result = await transcription_queue.submit(message, bot, user_id)
                     if result is not None:
-                        await reply(message, user_id, result)
+                        try:
+                            await reply(message, user_id, result)
+                            job = await processor.transcription_job(f"{message.chat.id}:{message.message_id}")
+                            if (
+                                job
+                                and job.get("state") == "TRANSCRIBED"
+                                and transcription_queue._metadata(job).get("awaiting_delivery")
+                            ):
+                                await transcription_queue._mark_delivered(job, result)
+                        except Exception as exc:
+                            logger.error(
+                                "Could not deliver transcription result command=tg:%s:%s (%s)",
+                                user_id, message.chat.id, type(exc).__name__,
+                            )
                     return
                 audio = await download_voice(bot, message, settings.voice_max_bytes)
                 failure_code = "TRANSCRIPTION_FAILED"

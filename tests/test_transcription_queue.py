@@ -168,6 +168,45 @@ async def test_retry_after_receive_failure_reuses_saved_transcript():
 
 
 @pytest.mark.asyncio
+async def test_failed_telegram_delivery_keeps_result_and_confirmation_recoverable():
+    processor = QueueProcessor()
+    processor.receive = AsyncMock(return_value=BotReply("Confirme o registro.", "pending-123"))
+    transcriber = SimpleNamespace(transcribe=AsyncMock(return_value=SimpleNamespace(text="relato")))
+    settings = Settings(TELEGRAM_ALLOWED_USER_IDS="42")
+    queue = DurableTranscriptionQueue(processor, settings, transcriber)
+    bot = bot_stub()
+    bot.send_message = AsyncMock(side_effect=[RuntimeError("temporary Telegram outage"), bot.send_message.return_value])
+
+    result = await queue.submit(voice_message(), bot, 42)
+    pending = await processor.transcription_job("100:10")
+    assert result == BotReply("Confirme o registro.", "pending-123")
+    assert pending["state"] == "TRANSCRIBED"
+    assert pending["response"] == result.text
+    assert json.loads(pending["pending_command_json"])["pending_id"] == result.pending_id
+
+    await queue._process(pending, bot)
+    pending = await processor.transcription_job("100:10")
+    assert pending["state"] == "TRANSCRIBED"
+    metadata = json.loads(pending["pending_command_json"])
+    assert metadata["delivery_retry_count"] == 1
+    metadata["next_attempt_at"] = (datetime.now(UTC) + timedelta(minutes=1)).isoformat()
+    pending["pending_command_json"] = json.dumps(metadata)
+    processor.rows[-1]["pending_command_json"] = pending["pending_command_json"]
+    assert not queue._is_due(pending)
+    metadata["next_attempt_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    pending["pending_command_json"] = json.dumps(metadata)
+    processor.rows[-1]["pending_command_json"] = pending["pending_command_json"]
+
+    await queue._process(pending, bot)
+
+    delivered = await processor.transcription_job("100:10")
+    assert delivered["state"] == "TRANSCRIPTION_DELIVERED"
+    assert processor.receive.await_count == 1
+    assert transcriber.transcribe.await_count == 1
+    assert bot.send_message.await_args.kwargs["reply_markup"] is not None
+
+
+@pytest.mark.asyncio
 async def test_daily_quota_blocks_audio_without_a_short_retry_loop():
     processor = QueueProcessor()
     transcriber = SimpleNamespace(
@@ -240,7 +279,7 @@ async def test_two_users_keep_independent_transcription_jobs():
     )
 
     assert transcriber.transcribe.await_count == 2
-    assert {row["command_id"] for row in processor.rows if row["state"] == "TRANSCRIPTION_DELIVERED"} == {
+    assert {row["command_id"] for row in processor.rows if row["state"] == "TRANSCRIBED"} == {
         "tg:42:100:10",
         "tg:43:100:11",
     }
