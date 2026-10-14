@@ -1283,6 +1283,45 @@ async def test_drive_export_reuses_generated_xlsx_and_uses_requesting_telegram_i
     interpreter.interpret.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_drive_temporary_unavailability_suggests_retry_without_reconnect():
+    from agro_notes.google_drive import DriveUnavailableError
+
+    store = MemoryStore()
+    drive = SimpleNamespace(upload_for_user=Mock(side_effect=DriveUnavailableError("temporary outage")))
+    processor = MVPProcessor(
+        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"),
+        store,
+        SimpleNamespace(interpret=Mock()),
+        drive_export=drive,
+    )
+
+    result = await request_export(processor, "salva minha planilha no Drive")
+
+    assert "temporariamente indisponível" in result.text
+    assert "Tente novamente" in result.text
+    assert "/conectar_drive" not in result.text
+    drive.upload_for_user.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_export_waits_for_in_progress_event_write_lock():
+    store = MemoryStore()
+    processor = MVPProcessor(
+        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"),
+        store,
+        SimpleNamespace(interpret=Mock()),
+    )
+
+    async with processor._writer_lock:
+        export_task = asyncio.create_task(request_export(processor))
+        await asyncio.sleep(0.02)
+        assert not export_task.done()
+
+    result = await export_task
+    assert result.document is not None
+
+
 async def test_unauthorized_drive_export_never_uses_a_user_connection():
     store = MemoryStore()
     drive = SimpleNamespace(upload_for_user=Mock(side_effect=AssertionError("must not upload")))

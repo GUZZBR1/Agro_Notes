@@ -55,3 +55,7 @@ uvicorn agro_notes.main:app --host 0.0.0.0 --port 8000 --workers 1 --no-access-l
 ```
 
 Do not paste callback URLs into support tickets or logs.
+
+## Invitation revocation
+
+Run `python -m agro_notes.access_admin revoke-code <ID>` on the same host and filesystem as the bot, with the bot stopped. The bot holds a local SQLite process lock while running; the CLI refuses to revoke a code while that lock is held. If the bot runs on another machine, stop it there before running the administrative command.

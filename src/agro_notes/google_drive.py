@@ -24,6 +24,10 @@ class DriveNotConnectedError(RuntimeError):
     pass
 
 
+class DriveUnavailableError(RuntimeError):
+    """A connected user's Drive could not be reached temporarily."""
+
+
 class DriveConfigurationError(RuntimeError):
     pass
 
@@ -434,7 +438,7 @@ class GoogleDriveOAuth:
                         connection_id=connection["connection_id"],
                     )
                     raise DriveNotConnectedError("Google Drive connection needs renewal") from None
-                raise DriveNotConnectedError("Google Drive is temporarily unavailable; retry later") from None
+                raise DriveUnavailableError("Google Drive is temporarily unavailable; retry later") from None
             new_refresh = credentials.refresh_token or refresh_token
             expiry = credentials.expiry.astimezone(UTC).isoformat() if credentials.expiry else ""
             self._append_connection(

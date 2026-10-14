@@ -6,8 +6,18 @@ import argparse
 from datetime import UTC, datetime, timedelta
 
 from .access_control import AccessService, generate_invitation
+from .process_lock import ProcessLock, ProcessLockError
 from .settings import get_settings
 from .sheets import GoogleSheetsStore
+
+
+def revoke_code_when_bot_stopped(access: AccessService, sheet_id: str, code_id: str) -> None:
+    lock = ProcessLock(sheet_id)
+    lock.acquire()
+    try:
+        access.revoke_code(code_id)
+    finally:
+        lock.release()
 
 
 def main() -> None:
@@ -42,7 +52,10 @@ def main() -> None:
         print(code)
         print(f"Validade UTC: {(datetime.now(UTC) + timedelta(hours=args.expires_in_hours)).isoformat()}")
     elif args.command == "revoke-code":
-        access.revoke_code(args.code_id)
+        try:
+            revoke_code_when_bot_stopped(access, settings.google_sheet_id, args.code_id)
+        except ProcessLockError as exc:
+            parser.error(str(exc))
         print("Convite revogado.")
     else:
         access.revoke_user(args.telegram_user_id)

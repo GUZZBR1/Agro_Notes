@@ -8,7 +8,7 @@ import pytest
 from cryptography.fernet import Fernet
 
 from agro_notes.exports import ExportDocument, match_export_intent
-from agro_notes.google_drive import DRIVE_FILE_SCOPE, GoogleDriveOAuth, _safe_filename
+from agro_notes.google_drive import DRIVE_FILE_SCOPE, DriveUnavailableError, GoogleDriveOAuth, _safe_filename
 from agro_notes.settings import Settings
 
 
@@ -256,7 +256,7 @@ def test_transient_refresh_errors_keep_connection_and_do_not_log_token(monkeypat
 
     monkeypatch.setattr(Credentials, "refresh", fail_refresh)
     caplog.set_level(logging.WARNING)
-    with pytest.raises(Exception, match="temporarily unavailable"):
+    with pytest.raises(DriveUnavailableError, match="temporarily unavailable"):
         service.upload_for_user(42, ExportDocument("farm.xlsx", b"xlsx"))
     assert "refresh-secret-value" not in caplog.text
     assert service.is_connected(42)

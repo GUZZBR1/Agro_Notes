@@ -101,9 +101,10 @@ class MVPProcessor:
             if not self.settings.farm_property_id.strip():
                 return BotReply("Não consegui identificar a fazenda autorizada para a exportação.")
             try:
-                document = await asyncio.to_thread(
-                    build_property_export, self.store, self.settings.farm_property_id, export_intent.kind
-                )
+                async with self._writer_lock:
+                    document = await asyncio.to_thread(
+                        build_property_export, self.store, self.settings.farm_property_id, export_intent.kind
+                    )
             except Exception as exc:
                 logger.error("Export generation failed (%s)", type(exc).__name__)
                 return BotReply("Não foi possível gerar a planilha. Tente novamente.")
@@ -113,12 +114,16 @@ class MVPProcessor:
                 try:
                     uploaded = await asyncio.to_thread(self.drive_export.upload_for_user, user_id, document)
                 except Exception as exc:
-                    from .google_drive import DriveConfigurationError, DriveNotConnectedError
+                    from .google_drive import DriveConfigurationError, DriveNotConnectedError, DriveUnavailableError
 
                     if isinstance(exc, DriveNotConnectedError):
                         return BotReply(
                             "Sua conexão com o Google Drive precisa ser renovada. "
                             "Use /conectar_drive e tente novamente."
+                        )
+                    if isinstance(exc, DriveUnavailableError):
+                        return BotReply(
+                            "O Google Drive está temporariamente indisponível. Tente novamente em instantes."
                         )
                     if isinstance(exc, DriveConfigurationError):
                         return BotReply("A exportação para Google Drive ainda não está configurada.")
