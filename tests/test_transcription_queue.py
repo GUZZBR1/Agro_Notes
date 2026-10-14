@@ -184,14 +184,14 @@ async def test_failed_telegram_delivery_keeps_result_and_confirmation_recoverabl
     assert pending["response"] == result.text
     assert json.loads(pending["pending_command_json"])["pending_id"] == result.pending_id
 
+    failure_time = datetime.now(UTC)
     await queue._process(pending, bot)
     pending = await processor.transcription_job("100:10")
     assert pending["state"] == "TRANSCRIBED"
     metadata = json.loads(pending["pending_command_json"])
     assert metadata["delivery_retry_count"] == 1
-    metadata["next_attempt_at"] = (datetime.now(UTC) + timedelta(minutes=1)).isoformat()
-    pending["pending_command_json"] = json.dumps(metadata)
-    processor.rows[-1]["pending_command_json"] = pending["pending_command_json"]
+    retry_at = datetime.fromisoformat(metadata["next_attempt_at"])
+    assert retry_at > failure_time
     assert not queue._is_due(pending)
     metadata["next_attempt_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
     pending["pending_command_json"] = json.dumps(metadata)

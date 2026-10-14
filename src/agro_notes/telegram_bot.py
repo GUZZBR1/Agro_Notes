@@ -422,9 +422,10 @@ class DurableTranscriptionQueue:
             logger.error("Could not send transcription result command=%s", job.get("command_id", ""))
             metadata = self._metadata(job)
             attempts = int(metadata.get("delivery_retry_count", 0)) + 1
+            retry_delay = min(5 * (2 ** min(attempts - 1, 4)), 60)
             metadata.update(
                 delivery_retry_count=attempts,
-                next_attempt_at=(datetime.now(UTC) + timedelta(seconds=min(5 * (2 ** (attempts - 1)), 60))).isoformat(),
+                next_attempt_at=(datetime.now(UTC) + timedelta(seconds=retry_delay)).isoformat(),
                 delivery_error=type(exc).__name__,
             )
             await self._save(
