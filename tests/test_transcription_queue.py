@@ -337,3 +337,45 @@ async def test_startup_recovers_interrupted_processing_state():
 
     assert processor.receive.await_count == 1
     assert processor.deliveries[0][1]["transcript"] == "recuperado após reinício"
+
+
+@pytest.mark.asyncio
+async def test_confirmation_binding_failure_keeps_voice_delivery_recoverable():
+    processor = QueueProcessor()
+    processor.receive = AsyncMock(return_value=BotReply("Confirme o registro.", "pending-123"))
+    processor.bind_confirmation = AsyncMock(side_effect=[RuntimeError("temporary Sheets outage"), None])
+    transcriber = SimpleNamespace(transcribe=AsyncMock(return_value=SimpleNamespace(text="relato")))
+    settings = Settings(TELEGRAM_ALLOWED_USER_IDS="42")
+    queue = DurableTranscriptionQueue(processor, settings, transcriber)
+    bot = bot_stub()
+
+    result = await queue.submit(voice_message(), bot, 42)
+    pending = await processor.transcription_job("100:10")
+
+    assert result == BotReply("Confirme o registro.", "pending-123")
+    assert pending["state"] == "TRANSCRIBED"
+    assert DurableTranscriptionQueue._metadata(pending)["awaiting_delivery"] is True
+
+    await queue._send_background_reply(bot, pending, 42, result)
+    pending = await processor.transcription_job("100:10")
+    metadata = json.loads(pending["pending_command_json"])
+    assert pending["state"] == "TRANSCRIBED"
+    assert metadata["awaiting_delivery"] is True
+    assert metadata["pending_id"] == "pending-123"
+    assert metadata["delivery_retry_count"] == 1
+    assert bot.send_message.await_count == 2
+    bot.send_message.reset_mock()
+
+    metadata["next_attempt_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    pending["pending_command_json"] = json.dumps(metadata)
+    processor.rows[-1]["pending_command_json"] = pending["pending_command_json"]
+
+    await queue._process(pending, bot)
+
+    delivered = await processor.transcription_job("100:10")
+    assert delivered["state"] == "TRANSCRIPTION_DELIVERED"
+    assert processor.receive.await_count == 1
+    assert transcriber.transcribe.await_count == 1
+    assert processor.bind_confirmation.await_count == 2
+    assert bot.send_message.await_count == 1
+    assert bot.send_message.await_args.kwargs["reply_markup"] is not None

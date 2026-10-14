@@ -51,6 +51,11 @@ class EventStore(Protocol):
 class MVPProcessor:
     """Serializes writes for one running process; deploy with one worker only."""
 
+    _transcription_queue_states = {
+        "PENDING_TRANSCRIPTION", "PROCESSING_TRANSCRIPTION", "RETRY_WAIT",
+        "DAILY_QUOTA_BLOCKED", "TRANSCRIBED", "TRANSCRIPTION_DELIVERED",
+    }
+
     def __init__(
         self,
         settings: Settings,
@@ -433,36 +438,59 @@ class MVPProcessor:
                 "retry_count": int(queue_metadata.get("retry_count", 0)),
             }
             now = datetime.now(UTC).isoformat()
-            conversation = {
-                **(prior or {}),
-                "message_id": f"{message_id}:transcription:{state.lower()}:{now}",
-                "property_id": self.settings.farm_property_id,
-                "command_id": command_id,
-                "user_id": str(user_id),
-                "channel": "VOICE",
-                "received_at": received_at,
-                "captured_at": captured_at,
-                "device_timezone": "UNKNOWN",
-                "resolved_at": now,
-                "raw_text_ref": message_id,
-                "audio_ref": source_reference,
-                "transcript": transcript,
-                "transcript_confidence": "",
-                "interpretation_id": "",
-                "intents": "[]",
-                "entity_candidates": "[]",
-                "missing_fields": "[]",
-                "confirmation_prompt": response,
-                "response": response,
-                "model/version": self.settings.transcription_model,
-                "state": state,
-                "event_ids": "[]",
-                "pending_command_json": json.dumps(metadata, ensure_ascii=False, sort_keys=True),
-                "callback_chat_id": "",
-                "callback_message_id": "",
-            }
+            awaiting_delivery = bool(metadata.get("awaiting_delivery"))
+            preserve_workflow = (
+                awaiting_delivery and prior and prior.get("state") not in self._transcription_queue_states
+            )
+            if preserve_workflow:
+                try:
+                    pending_payload = json.loads(prior.get("pending_command_json") or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    pending_payload = {}
+                if not isinstance(pending_payload, dict):
+                    pending_payload = {}
+                pending_payload["transcription_queue"] = metadata
+                conversation = {
+                    **prior,
+                    "message_id": f"{message_id}:transcription-awaiting-delivery:{now}",
+                    "resolved_at": now,
+                    "transcript": transcript,
+                    "response": response,
+                    "pending_command_json": json.dumps(pending_payload, ensure_ascii=False, sort_keys=True),
+                }
+                persisted_state = str(prior["state"])
+            else:
+                conversation = {
+                    **(prior or {}),
+                    "message_id": f"{message_id}:transcription:{state.lower()}:{now}",
+                    "property_id": self.settings.farm_property_id,
+                    "command_id": command_id,
+                    "user_id": str(user_id),
+                    "channel": "VOICE",
+                    "received_at": received_at,
+                    "captured_at": captured_at,
+                    "device_timezone": "UNKNOWN",
+                    "resolved_at": now,
+                    "raw_text_ref": message_id,
+                    "audio_ref": source_reference,
+                    "transcript": transcript,
+                    "transcript_confidence": "",
+                    "interpretation_id": "",
+                    "intents": "[]",
+                    "entity_candidates": "[]",
+                    "missing_fields": "[]",
+                    "confirmation_prompt": response,
+                    "response": response,
+                    "model/version": self.settings.transcription_model,
+                    "state": state,
+                    "event_ids": "[]",
+                    "pending_command_json": json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                    "callback_chat_id": "",
+                    "callback_message_id": "",
+                }
+                persisted_state = state
             await self._store("append_conversation", conversation)
-            await self._audit_conversation_state(conversation, state, response)
+            await self._audit_conversation_state(conversation, persisted_state, response)
 
     async def transcription_job(self, message_id: str) -> dict[str, Any] | None:
         rows = await self._store("read_rows", "18_Conversas")
@@ -482,11 +510,16 @@ class MVPProcessor:
                 previous_metadata = {}
             if not isinstance(previous_metadata, dict):
                 previous_metadata = {}
-            metadata = {
-                **previous_metadata,
-                **queue_metadata,
-                "transcription_delivered": True,
-            }
+            nested_queue = previous_metadata.get("transcription_queue")
+            if isinstance(nested_queue, dict):
+                metadata = {**nested_queue, **queue_metadata, "transcription_delivered": True}
+                metadata.pop("awaiting_delivery", None)
+                metadata.pop("next_attempt_at", None)
+                previous_metadata["transcription_queue"] = metadata
+            else:
+                metadata = {**previous_metadata, **queue_metadata, "transcription_delivered": True}
+                metadata.pop("awaiting_delivery", None)
+                metadata.pop("next_attempt_at", None)
             now = datetime.now(UTC).isoformat()
             updated = {
                 **prior,
@@ -494,13 +527,13 @@ class MVPProcessor:
                 "transcript": transcript,
                 "response": response,
                 "resolved_at": now,
-                "pending_command_json": json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                "pending_command_json": json.dumps(
+                    previous_metadata if isinstance(nested_queue, dict) else metadata,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
             }
-            queue_states = {
-                "PENDING_TRANSCRIPTION", "PROCESSING_TRANSCRIPTION", "RETRY_WAIT",
-                "DAILY_QUOTA_BLOCKED", "TRANSCRIBED",
-            }
-            if prior.get("state") in queue_states:
+            if prior.get("state") in self._transcription_queue_states:
                 updated["state"] = "TRANSCRIPTION_DELIVERED"
             await self._store("append_conversation", updated)
             await self._audit_conversation_state(updated, str(updated["state"]), response)
@@ -512,15 +545,21 @@ class MVPProcessor:
             key = str(row.get("raw_text_ref") or "")
             if key:
                 latest[key] = row
-        active = {
-            "PENDING_TRANSCRIPTION", "PROCESSING_TRANSCRIPTION", "RETRY_WAIT",
-            "DAILY_QUOTA_BLOCKED", "TRANSCRIBED",
-        }
-        return [
-            row for row in latest.values()
-            if row.get("state") in active and str(row.get("user_id", "")).isdigit()
-            and int(row["user_id"]) in self.settings.allowed_user_ids
-        ]
+        active = self._transcription_queue_states - {"TRANSCRIPTION_DELIVERED"}
+        jobs = []
+        for row in latest.values():
+            try:
+                metadata = json.loads(row.get("pending_command_json") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            queue_metadata = metadata.get("transcription_queue", metadata) if isinstance(metadata, dict) else {}
+            if (
+                (row.get("state") in active or queue_metadata.get("awaiting_delivery"))
+                and str(row.get("user_id", "")).isdigit()
+                and int(row["user_id"]) in self.settings.allowed_user_ids
+            ):
+                jobs.append(row)
+        return jobs
 
     async def bind_confirmation(self, user_id: int, pending_id: str, *, chat_id: int, message_id: int) -> None:
         async with self._writer_lock:
@@ -1523,14 +1562,11 @@ class MVPProcessor:
 
     async def _conversation_by_message(self, message_id: str) -> dict[str, Any] | None:
         rows = await self._store("read_rows", "18_Conversas")
-        queue_states = {
-            "PENDING_TRANSCRIPTION", "PROCESSING_TRANSCRIPTION", "RETRY_WAIT",
-            "DAILY_QUOTA_BLOCKED", "TRANSCRIBED",
-        }
         return next(
             (
                 row for row in reversed(rows)
-                if row.get("raw_text_ref") == message_id and row.get("state") not in queue_states
+                if row.get("raw_text_ref") == message_id
+                and row.get("state") not in self._transcription_queue_states
             ),
             None,
         )
@@ -1881,7 +1917,14 @@ class MVPProcessor:
 
     async def _latest_open_conversation_any_state(self, user_id: int) -> dict[str, Any] | None:
         rows = await self._store("read_rows", "18_Conversas")
-        latest = next((row for row in reversed(rows) if row.get("user_id") == str(user_id)), None)
+        latest = next(
+            (
+                row for row in reversed(rows)
+                if row.get("user_id") == str(user_id)
+                and row.get("state") not in self._transcription_queue_states
+            ),
+            None,
+        )
         if latest and latest.get("state") in {"NEEDS_CLARIFICATION", "WAITING_CONFIRMATION"}:
             return latest
         return None

@@ -172,7 +172,7 @@ class DurableTranscriptionQueue:
                 if latest and self._is_due(latest):
                     result = await self._process_locked(latest, bot, user_id, resumed=True)
                     if result:
-                        if latest.get("state") == "TRANSCRIBED" and self._metadata(latest).get("awaiting_delivery"):
+                        if self._metadata(latest).get("awaiting_delivery"):
                             await self._send_background_reply(bot, latest, user_id, result)
                         else:
                             await send_bot_reply(
@@ -194,7 +194,7 @@ class DurableTranscriptionQueue:
         state = str(job.get("state") or "PENDING_TRANSCRIPTION")
         metadata = self._metadata(job)
         notification_already_sent = bool(metadata.get("notification_sent"))
-        if state == "TRANSCRIBED" and metadata.get("awaiting_delivery"):
+        if metadata.get("awaiting_delivery"):
             pending_id = metadata.get("pending_id")
             return BotReply(str(job.get("response") or ""), str(pending_id) if pending_id else None)
         if state in {"PROCESSING_TRANSCRIPTION", "TRANSCRIBED", "RETRY_WAIT"}:
@@ -347,12 +347,16 @@ class DurableTranscriptionQueue:
     def _metadata(job: dict) -> dict:
         value = job.get("pending_command_json") or "{}"
         if isinstance(value, dict):
-            return dict(value)
-        try:
-            parsed = json.loads(value)
-            return parsed if isinstance(parsed, dict) else {}
-        except (TypeError, json.JSONDecodeError):
+            parsed = dict(value)
+        else:
+            try:
+                parsed = json.loads(value)
+            except (TypeError, json.JSONDecodeError):
+                return {}
+        if not isinstance(parsed, dict):
             return {}
+        nested = parsed.get("transcription_queue")
+        return nested if isinstance(nested, dict) else parsed
 
     @staticmethod
     def _error_class(exc: Exception) -> TranscriptionErrorClass:
@@ -389,9 +393,8 @@ class DurableTranscriptionQueue:
 
     @staticmethod
     def _is_due(job: dict) -> bool:
-        state = job.get("state")
         metadata = DurableTranscriptionQueue._metadata(job)
-        if state == "TRANSCRIBED" and metadata.get("awaiting_delivery"):
+        if metadata.get("awaiting_delivery"):
             value = metadata.get("next_attempt_at")
             if not value:
                 return True
@@ -416,7 +419,9 @@ class DurableTranscriptionQueue:
     async def _send_background_reply(self, bot: Bot, job: dict, user_id: int, result: BotReply) -> None:
         try:
             chat_id = int(str(job["raw_text_ref"]).split(":", 1)[0])
-            await send_bot_reply(bot, self.processor, chat_id, user_id, result)
+            delivered = await send_bot_reply(bot, self.processor, chat_id, user_id, result)
+            if not delivered:
+                raise RuntimeError("Could not bind confirmation to the Telegram message")
             await self._mark_delivered(job, result)
         except Exception as exc:
             logger.error("Could not send transcription result command=%s", job.get("command_id", ""))
@@ -473,7 +478,7 @@ async def download_voice(bot: Bot, message: Message, max_bytes: int) -> bytes:
         return buffer.getvalue()
 
 
-async def send_bot_reply(bot: Bot, processor: Processor, chat_id: int, user_id: int, result: BotReply) -> None:
+async def send_bot_reply(bot: Bot, processor: Processor, chat_id: int, user_id: int, result: BotReply) -> bool:
     markup = None
     if result.pending_id:
         if len(f"confirm:{result.pending_id}") > 64:
@@ -496,6 +501,8 @@ async def send_bot_reply(bot: Bot, processor: Processor, chat_id: int, user_id: 
         except Exception:
             await sent.edit_reply_markup(reply_markup=None)
             await bot.send_message(chat_id, "Não consegui vincular a confirmação. Envie o comando novamente.")
+            return False
+    return True
 
 
 def build_router(
@@ -518,7 +525,7 @@ def build_router(
             if close:
                 await close()
 
-    async def reply(message: Message, user_id: int, result: BotReply) -> None:
+    async def reply(message: Message, user_id: int, result: BotReply) -> bool:
         markup = None
         if result.pending_id:
             markup = InlineKeyboardMarkup(
@@ -533,6 +540,7 @@ def build_router(
             result = BotReply("Não consegui vincular a confirmação. Envie o comando novamente.")
             markup = None
         sent = await message.answer(result.text, reply_markup=markup)
+        confirmation_bound = True
         if result.pending_id:
             try:
                 await processor.bind_confirmation(
@@ -541,6 +549,8 @@ def build_router(
             except Exception:
                 await sent.edit_reply_markup(reply_markup=None)
                 await message.answer("Não consegui vincular a confirmação. Envie o comando novamente.")
+                confirmation_bound = False
+        return confirmation_bound
 
     async def authorize(message: Message) -> bool:
         if message.chat.type != "private":
@@ -591,14 +601,11 @@ def build_router(
                     result = await transcription_queue.submit(message, bot, user_id)
                     if result is not None:
                         try:
-                            await reply(message, user_id, result)
-                            job = await processor.transcription_job(f"{message.chat.id}:{message.message_id}")
-                            if (
-                                job
-                                and job.get("state") == "TRANSCRIBED"
-                                and transcription_queue._metadata(job).get("awaiting_delivery")
-                            ):
-                                await transcription_queue._mark_delivered(job, result)
+                            delivered = await reply(message, user_id, result)
+                            if delivered:
+                                job = await processor.transcription_job(f"{message.chat.id}:{message.message_id}")
+                                if job and transcription_queue._metadata(job).get("awaiting_delivery"):
+                                    await transcription_queue._mark_delivered(job, result)
                         except Exception as exc:
                             logger.error(
                                 "Could not deliver transcription result command=tg:%s:%s (%s)",
