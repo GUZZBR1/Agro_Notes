@@ -5,13 +5,15 @@ import io
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from .access_control import AccessService, normalize_code
+from .exports import ExportDocument
+from .google_drive import DriveConfigurationError, match_drive_connection_intent
 from .provider_factory import build_transcriber
 from .settings import Settings
 from .transcription import Transcriber
@@ -24,6 +26,7 @@ class BotReply:
     text: str
     pending_id: str | None = None
     remove_keyboard: bool = False
+    document: ExportDocument | None = None
 
 
 class Processor(Protocol):
@@ -100,6 +103,7 @@ def build_router(
     settings: Settings,
     transcriber: Transcriber | None = None,
     access: AccessService | None = None,
+    google_drive: Any | None = None,
 ) -> Router:
     router = Router(name="agro_notes")
     owns_transcriber = transcriber is None
@@ -116,6 +120,18 @@ def build_router(
                 await close()
 
     async def reply(message: Message, user_id: int, result: BotReply) -> None:
+        if result.document is not None:
+            if not await authorize(message):
+                return
+            try:
+                await message.answer_document(
+                    BufferedInputFile(result.document.content, filename=result.document.filename),
+                    caption=result.text,
+                )
+            except Exception as exc:
+                logger.error("Telegram export delivery failed (%s)", type(exc).__name__)
+                await message.answer("Não foi possível enviar a planilha. Tente novamente.")
+            return
         markup = None
         if result.pending_id:
             markup = InlineKeyboardMarkup(
@@ -145,14 +161,48 @@ def build_router(
             return False
         user_id = message.from_user.id if message.from_user else None
         allowed = (
-            await access.is_authorized(user_id)
-            if access and user_id is not None
-            else is_allowed(user_id, settings)
+            await access.is_authorized(user_id) if access and user_id is not None else is_allowed(user_id, settings)
         )
         if not allowed:
             await message.answer("Acesso não autorizado.")
             return False
         return True
+
+    async def connect_drive(message: Message, user_id: int) -> None:
+        if not google_drive or not google_drive.configured:
+            await message.answer("O Google Drive ainda não está configurado pelo administrador.")
+            return
+        try:
+            already_connected = await asyncio.to_thread(google_drive.is_connected, user_id)
+            if already_connected:
+                await message.answer("Seu Google Drive já está conectado.")
+                return
+            url = await asyncio.to_thread(google_drive.create_authorization_url, user_id)
+        except ValueError as exc:
+            if str(exc) == "Google Drive is already connected":
+                await message.answer("Seu Google Drive já está conectado.")
+                return
+            await message.answer("Não foi possível iniciar a conexão. Tente novamente.")
+            return
+        except DriveConfigurationError:
+            await message.answer("O Google Drive ainda não está configurado pelo administrador.")
+            return
+        await message.answer(f"Para conectar seu Google Drive, abra este link e autorize o Agro Notes.\n{url}")
+
+    async def disconnect_drive(message: Message, user_id: int) -> None:
+        if not google_drive:
+            await message.answer("Não há uma conexão Google Drive ativa.")
+            return
+        try:
+            disconnected = await asyncio.to_thread(google_drive.disconnect, user_id)
+        except Exception as exc:
+            logger.error("Google Drive disconnect failed (%s)", type(exc).__name__)
+            await message.answer("Não foi possível desconectar o Google Drive. Tente novamente.")
+            return
+        if disconnected:
+            await message.answer("Google Drive desconectado. A conexão não poderá mais ser usada pelo Agro Notes.")
+        else:
+            await message.answer("Não há uma conexão Google Drive ativa.")
 
     def user_display(message: Message) -> tuple[str, str]:
         user = message.from_user
@@ -183,7 +233,8 @@ def build_router(
             return
         if access and message.from_user:
             display, username = user_display(message)
-            await message.answer(await access.start(message.from_user.id, display, username))
+            text = await access.start(message.from_user.id, display, username)
+            await message.answer(text)
         elif await authorize(message):
             await message.answer(
                 "Envie um texto ou áudio com a movimentação da fazenda. "
@@ -205,6 +256,20 @@ def build_router(
             return
         display, username = user_display(message)
         await message.answer(await access.redeem(message.from_user.id, pieces[1], display, username))
+
+    @router.message(Command("conectar_drive"))
+    async def connect_drive_command(message: Message) -> None:
+        if not await authorize(message):
+            return
+        assert message.from_user is not None
+        await connect_drive(message, message.from_user.id)
+
+    @router.message(Command("desconectar_drive"))
+    async def disconnect_drive_command(message: Message) -> None:
+        if not await authorize(message):
+            return
+        assert message.from_user is not None
+        await disconnect_drive(message, message.from_user.id)
 
     @router.message(F.voice)
     async def voice(message: Message, bot: Bot) -> None:
@@ -292,6 +357,13 @@ def build_router(
             return
         assert message.from_user is not None and message.text is not None
         user_id = message.from_user.id
+        drive_action = match_drive_connection_intent(message.text)
+        if drive_action == "connect":
+            await connect_drive(message, user_id)
+            return
+        if drive_action == "disconnect":
+            await disconnect_drive(message, user_id)
+            return
         received_at = datetime.now(UTC).isoformat()
         async with lock_for(user_id):
             try:
@@ -326,6 +398,23 @@ def build_router(
             await query.answer("Use o chat privado do bot para acessar dados da fazenda.", show_alert=True)
             return
         action, _, pending_id = (query.data or "").partition(":")
+        if action == "drive_connect":
+            if not google_drive:
+                await query.answer("Esta conexão expirou. Solicite um novo link.", show_alert=True)
+                return
+            try:
+                connected = await asyncio.to_thread(google_drive.confirm_connection, user_id, pending_id)
+            except Exception as exc:
+                logger.error("Google Drive confirmation failed (%s)", type(exc).__name__)
+                connected = False
+            if not connected:
+                await query.answer("Esta conexão expirou ou foi revogada. Solicite um novo link.", show_alert=True)
+                await query.message.edit_reply_markup(reply_markup=None)
+                return
+            await query.answer("Google Drive conectado.")
+            await query.message.edit_reply_markup(reply_markup=None)
+            await query.message.answer("Google Drive conectado com sucesso.")
+            return
         async with lock_for(user_id):
             if action not in {"confirm", "cancel"} or not pending_id or not isinstance(query.message, Message):
                 await query.answer("Esta confirmação expirou ou não pertence a você.", show_alert=True)

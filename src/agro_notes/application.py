@@ -18,6 +18,7 @@ from .domain import (
     ValidatedEvent,
     ValidationStatus,
 )
+from .exports import build_property_export, match_export_intent
 from .settings import Settings
 from .sheets import AmbiguousResolutionError
 from .telegram_bot import BotReply
@@ -59,12 +60,14 @@ class MVPProcessor:
         interpreter: Interpreter,
         validator: DeterministicValidator | None = None,
         access: AccessService | None = None,
+        drive_export: Any | None = None,
     ) -> None:
         self.settings = settings
         self.store = store
         self.interpreter = interpreter
         self.validator = validator or DeterministicValidator(settings.min_interpretation_confidence)
         self.access = access
+        self.drive_export = drive_export
         self._writer_lock = asyncio.Lock()
 
     async def _authorized(self, user_id: int) -> bool:
@@ -87,6 +90,51 @@ class MVPProcessor:
         source_reference: str | None,
         received_at: str | None = None,
     ) -> BotReply:
+        if not await self._authorized(user_id):
+            return BotReply("Acesso não autorizado.")
+        export_intent = match_export_intent(text)
+        if export_intent is not None:
+            if export_intent.destination == "drive" and (
+                self.drive_export is None or not getattr(self.drive_export, "configured", True)
+            ):
+                return BotReply("A exportação para Google Drive ainda não está configurada.")
+            if not self.settings.farm_property_id.strip():
+                return BotReply("Não consegui identificar a fazenda autorizada para a exportação.")
+            try:
+                async with self._writer_lock:
+                    if not await self._authorized(user_id):
+                        return BotReply("Acesso não autorizado.")
+                    document = await asyncio.to_thread(
+                        build_property_export, self.store, self.settings.farm_property_id, export_intent.kind
+                    )
+            except Exception as exc:
+                logger.error("Export generation failed (%s)", type(exc).__name__)
+                return BotReply("Não foi possível gerar a planilha. Tente novamente.")
+            if export_intent.destination == "drive":
+                if self.drive_export is None:
+                    return BotReply("A exportação para Google Drive ainda não está configurada.")
+                try:
+                    uploaded = await asyncio.to_thread(self.drive_export.upload_for_user, user_id, document)
+                except Exception as exc:
+                    from .google_drive import DriveConfigurationError, DriveNotConnectedError, DriveUnavailableError
+
+                    if isinstance(exc, DriveNotConnectedError):
+                        return BotReply(
+                            "Sua conexão com o Google Drive precisa ser renovada. "
+                            "Use /conectar_drive e tente novamente."
+                        )
+                    if isinstance(exc, DriveUnavailableError):
+                        return BotReply(
+                            "O Google Drive está temporariamente indisponível. Tente novamente em instantes."
+                        )
+                    if isinstance(exc, DriveConfigurationError):
+                        return BotReply("A exportação para Google Drive ainda não está configurada.")
+                    logger.error("Google Drive export failed (%s)", type(exc).__name__)
+                    return BotReply("Não foi possível salvar a planilha no Google Drive. Tente novamente.")
+                link = uploaded.get("web_view_link")
+                suffix = f"\n{link}" if link else ""
+                return BotReply(f"Planilha salva no Google Drive em Agro Notes/Exportações.{suffix}")
+            return BotReply("Aqui está a planilha da fazenda.", document=document)
         stripped = text.strip()
         is_prefixed_code = stripped.upper().startswith("AGRO-") and normalize_code(stripped)
         if is_prefixed_code or stripped.casefold().startswith("/acesso"):
@@ -242,8 +290,7 @@ class MVPProcessor:
                 if result.status == ValidationStatus.NEEDS_CLARIFICATION:
                     manual_review = any("revisão manual" in question.lower() for question in result.questions)
                     answer = (
-                        "⚠️ Esta solicitação exige revisão manual e não foi gravada. "
-                        + " ".join(result.questions)
+                        "⚠️ Esta solicitação exige revisão manual e não foi gravada. " + " ".join(result.questions)
                         if manual_review
                         else self._clarification(result.questions, result.missing_fields)
                     )
@@ -361,6 +408,8 @@ class MVPProcessor:
         failure_code: str,
         response: str,
     ) -> None:
+        if not await self._authorized(user_id):
+            return
         async with self._writer_lock:
             if not await self._authorized(user_id):
                 return
@@ -420,6 +469,8 @@ class MVPProcessor:
             )
 
     async def bind_confirmation(self, user_id: int, pending_id: str, *, chat_id: int, message_id: int) -> None:
+        if not await self._authorized(user_id):
+            raise ValueError("User is not authorized.")
         async with self._writer_lock:
             if not await self._authorized(user_id):
                 raise ValueError("User is not authorized.")
@@ -439,6 +490,8 @@ class MVPProcessor:
     async def confirm(
         self, user_id: int, pending_id: str, *, source_chat_id: int | None = None, source_message_id: int | None = None
     ) -> BotReply:
+        if not await self._authorized(user_id):
+            return BotReply("Acesso não autorizado.")
         async with self._writer_lock:
             if not await self._authorized(user_id):
                 return BotReply("Acesso não autorizado.")
@@ -481,12 +534,15 @@ class MVPProcessor:
                 logger.error("Confirmation failed command=%s", pending_id)
                 return BotReply(
                     "⚠️ O comando pode ter sido aplicado parcialmente. Não vou repetir automaticamente; "
-                    "reconcilie o evento e seus efeitos na planilha antes de continuar.", remove_keyboard=True
+                    "reconcilie o evento e seus efeitos na planilha antes de continuar.",
+                    remove_keyboard=True,
                 )
 
     async def cancel(
         self, user_id: int, pending_id: str, *, source_chat_id: int | None = None, source_message_id: int | None = None
     ) -> BotReply:
+        if not await self._authorized(user_id):
+            return BotReply("Acesso não autorizado.")
         async with self._writer_lock:
             if not await self._authorized(user_id):
                 return BotReply("Acesso não autorizado.")
@@ -585,11 +641,7 @@ class MVPProcessor:
                     )
                     continue
                 target_id = str(target[target_key])
-                possible = [
-                    row
-                    for row in possible
-                    if self._event_payload(row).get(target_key) == target_id
-                ]
+                possible = [row for row in possible if self._event_payload(row).get(target_key) == target_id]
 
             if not possible:
                 candidate.ambiguities.append(
@@ -808,17 +860,13 @@ class MVPProcessor:
                         old_group_id = original_payload.get("group_id")
                         new_group_id = payload.get("group_id")
                         if old_group_id != new_group_id and (old_group_id or new_group_id):
-                            questions.append(
-                                "A correção mudaria o lote-alvo da vacinação e exige revisão manual."
-                            )
+                            questions.append("A correção mudaria o lote-alvo da vacinação e exige revisão manual.")
                     if old_animal_ids and not old_animal_ids.intersection(new_animal_ids):
                         questions.append(
                             "O evento anterior pertence a outro animal. Confira o histórico antes de corrigir."
                         )
             resolved.append(
-                event.model_copy(
-                    update={"payload": payload, "correction_previous": correction_previous}, deep=True
-                )
+                event.model_copy(update={"payload": payload, "correction_previous": correction_previous}, deep=True)
             )
         return resolved, questions
 
@@ -1271,9 +1319,7 @@ class MVPProcessor:
             "actor_id": str(user_id),
             "channel": "TELEGRAM",
             "target_scope": (
-                "GROUP"
-                if event.event_type == EventType.VACCINATION and event.payload.get("group_id")
-                else "INDIVIDUAL"
+                "GROUP" if event.event_type == EventType.VACCINATION and event.payload.get("group_id") else "INDIVIDUAL"
             ),
             "property_id": event.property_id,
             "source_message_id": message_id,
@@ -1456,7 +1502,8 @@ class MVPProcessor:
                     }
                 ],
             )
-        # Telegram_Access is authoritative; do not auto-create a trusted profile.
+        # Telegram_Access is the authority. Do not auto-create a trusted
+        # 19_Usuarios row here: an old active projection could revive revocation.
 
     def _trusted_context(
         self, user_id: int, command_id: str, captured_at: str, *, inferred_captured_at: str | None = None
@@ -1520,12 +1567,8 @@ class MVPProcessor:
             and row.get("target_basis") == "GROUP_MEMBERSHIP"
         ]
         allocations = await self._store("read_rows", "05_Alocacoes")
-        latest_allocations = {
-            str(row["allocation_id"]): row for row in allocations if row.get("allocation_id")
-        }
-        latest_events = {
-            str(row["event_id"]): row for row in event_rows if row.get("event_id")
-        }
+        latest_allocations = {str(row["allocation_id"]): row for row in allocations if row.get("allocation_id")}
+        latest_events = {str(row["event_id"]): row for row in event_rows if row.get("event_id")}
         for target in group_targets:
             event = latest_events.get(str(target.get("event_id")))
             if not event:
@@ -1538,10 +1581,7 @@ class MVPProcessor:
                 and allocation.get("animal_id") == animal["animal_id"]
                 and allocation.get("group_id") == target["group_id"]
                 and str(allocation.get("effective_from") or "")[:10] <= event_date
-                and (
-                    not allocation.get("effective_to")
-                    or event_date < str(allocation.get("effective_to") or "")[:10]
-                )
+                and (not allocation.get("effective_to") or event_date < str(allocation.get("effective_to") or "")[:10])
                 for allocation in latest_allocations.values()
             )
             if belongs_to_group:
@@ -1576,10 +1616,7 @@ class MVPProcessor:
                 and allocation.get("animal_id") == animal["animal_id"]
                 and allocation.get("group_id") == group_id
                 and str(allocation.get("effective_from") or "")[:10] <= event_date
-                and (
-                    not allocation.get("effective_to")
-                    or event_date < str(allocation.get("effective_to") or "")[:10]
-                )
+                and (not allocation.get("effective_to") or event_date < str(allocation.get("effective_to") or "")[:10])
                 for allocation in latest_allocations.values()
             ):
                 relevant.append(row)

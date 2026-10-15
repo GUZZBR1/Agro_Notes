@@ -1,9 +1,12 @@
 import asyncio
+from copy import deepcopy
 from datetime import UTC, datetime
+from io import BytesIO
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
+from openpyxl import load_workbook
 
 from agro_notes.application import MVPProcessor
 from agro_notes.domain import EventProposal, InterpretationProposal
@@ -1263,3 +1266,215 @@ async def test_simple_weight_success_reply_contains_animal_weight_and_date():
     assert "animal 42" in response.text
     assert "512 kg" in response.text
     assert "12/10/2026" in response.text
+
+
+async def request_export(processor, text="/exportar", user_id=42, source="text"):
+    return await processor.receive(
+        user_id,
+        text,
+        source=source,
+        message_id="chat:export",
+        captured_at=datetime(2026, 10, 13, tzinfo=UTC).isoformat(),
+        device_timezone=None,
+        source_reference="voice-export" if source == "voice" else None,
+    )
+
+
+@pytest.mark.parametrize("text", ["/exportar", "exportar planilha", "me manda a planilha"])
+@pytest.mark.parametrize("source", ["text", "voice"])
+async def test_authorized_export_returns_workbook_without_interpretation_or_persistent_writes(text, source):
+    store = MemoryStore()
+    store.tabs["02_Animais"][0]["species"] = "trusted-cattle"
+    before = deepcopy(store.tabs)
+    interpreter = SimpleNamespace(interpret=Mock(side_effect=AssertionError("export must bypass interpretation")))
+    processor = MVPProcessor(Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"), store, interpreter)
+
+    result = await request_export(processor, text, source=source)
+
+    assert result.document is not None
+    assert result.document.filename.endswith(".xlsx")
+    assert result.pending_id is None
+    workbook = load_workbook(BytesIO(result.document.content))
+    assert workbook.sheetnames
+    assert any("trusted-cattle" in row for sheet in workbook for row in sheet.iter_rows(values_only=True))
+    assert store.tabs == before
+    interpreter.interpret.assert_not_called()
+
+
+async def test_drive_export_reuses_generated_xlsx_and_uses_requesting_telegram_identity():
+    store = MemoryStore()
+    before = deepcopy(store.tabs)
+    drive = SimpleNamespace(
+        upload_for_user=Mock(return_value={"file_id": "drive-file", "web_view_link": "https://drive.test/file"})
+    )
+    interpreter = SimpleNamespace(interpret=Mock(side_effect=AssertionError("export must bypass interpretation")))
+    processor = MVPProcessor(
+        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"), store, interpreter, drive_export=drive
+    )
+
+    result = await request_export(processor, "salva minha planilha no Drive")
+
+    assert result.document is None
+    assert "Planilha salva" in result.text
+    assert "https://drive.test/file" in result.text
+    drive.upload_for_user.assert_called_once()
+    user_id, document = drive.upload_for_user.call_args.args
+    assert user_id == 42
+    assert document.filename.endswith(".xlsx")
+    assert document.content[:2] == b"PK"
+    assert store.tabs == before
+    interpreter.interpret.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_drive_temporary_unavailability_suggests_retry_without_reconnect():
+    from agro_notes.google_drive import DriveUnavailableError
+
+    store = MemoryStore()
+    drive = SimpleNamespace(upload_for_user=Mock(side_effect=DriveUnavailableError("temporary outage")))
+    processor = MVPProcessor(
+        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"),
+        store,
+        SimpleNamespace(interpret=Mock()),
+        drive_export=drive,
+    )
+
+    result = await request_export(processor, "salva minha planilha no Drive")
+
+    assert "temporariamente indisponível" in result.text
+    assert "Tente novamente" in result.text
+    assert "/conectar_drive" not in result.text
+    drive.upload_for_user.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_export_waits_for_in_progress_event_write_lock():
+    store = MemoryStore()
+    processor = MVPProcessor(
+        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"),
+        store,
+        SimpleNamespace(interpret=Mock()),
+    )
+
+    async with processor._writer_lock:
+        export_task = asyncio.create_task(request_export(processor))
+        await asyncio.sleep(0.02)
+        assert not export_task.done()
+
+    result = await export_task
+    assert result.document is not None
+
+
+async def test_unauthorized_drive_export_never_uses_a_user_connection():
+    store = MemoryStore()
+    drive = SimpleNamespace(upload_for_user=Mock(side_effect=AssertionError("must not upload")))
+    processor = MVPProcessor(
+        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"),
+        store,
+        SimpleNamespace(interpret=Mock()),
+        drive_export=drive,
+    )
+
+    result = await request_export(processor, "salva minha planilha no Drive", user_id=99)
+
+    assert result.text == "Acesso não autorizado."
+    drive.upload_for_user.assert_not_called()
+
+
+async def test_export_unauthorized_user_cannot_read_or_interpret_data():
+    store = SimpleNamespace(read_rows=Mock(side_effect=AssertionError("unauthorized read")))
+    interpreter = SimpleNamespace(interpret=Mock(side_effect=AssertionError("unauthorized interpretation")))
+    processor = MVPProcessor(Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"), store, interpreter)
+
+    result = await request_export(processor, user_id=99)
+
+    assert result.document is None
+    assert result.text == "Acesso não autorizado."
+    store.read_rows.assert_not_called()
+    interpreter.interpret.assert_not_called()
+
+
+async def test_export_persisted_access_denial_overrides_legacy_whitelist():
+    store = SimpleNamespace(read_rows=Mock(side_effect=AssertionError("unauthorized read")))
+    access = SimpleNamespace(is_authorized=AsyncMock(return_value=False))
+    interpreter = SimpleNamespace(interpret=Mock())
+    processor = MVPProcessor(
+        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"), store, interpreter, access=access
+    )
+
+    result = await request_export(processor)
+
+    assert result.document is None
+    assert result.text == "Acesso não autorizado."
+    access.is_authorized.assert_awaited_once_with(42)
+    store.read_rows.assert_not_called()
+    interpreter.interpret.assert_not_called()
+
+
+async def test_export_uses_trusted_property_and_excludes_foreign_and_missing_property_rows():
+    store = MemoryStore()
+    store.tabs["02_Animais"][0]["species"] = "trusted-cattle"
+    store.tabs["02_Animais"].extend([
+        {"animal_id": "private-other-animal", "property_id": "other-farm", "species": "private-species"},
+        {"animal_id": "unscoped-animal", "species": "unscoped-species"},
+    ])
+    store.tabs["06_Eventos"].extend([
+        {
+            "event_id": "trusted-event", "property_id": "farm",
+            "event_type": "HEALTH_OBSERVATION", "processing_status": "APPLIED",
+            "event_payload_json": '{"observation": "trusted-observation"}',
+        },
+        {
+            "event_id": "private-other-event", "property_id": "other-farm",
+            "event_type": "HEALTH_OBSERVATION", "processing_status": "APPLIED",
+            "event_payload_json": '{"observation": "private-observation"}',
+        },
+    ])
+    before = deepcopy(store.tabs)
+    processor = make_processor(store)
+    processor.interpreter = SimpleNamespace(interpret=Mock(side_effect=AssertionError("must not interpret")))
+
+    result = await request_export(processor, "/exportar other-farm")
+
+    assert result.document is not None
+    workbook = load_workbook(BytesIO(result.document.content))
+    cells = [value for sheet in workbook for row in sheet.iter_rows(values_only=True) for value in row]
+    assert "trusted-cattle" in cells
+    assert "trusted-observation" in cells
+    assert "private-species" not in cells
+    assert "private-observation" not in cells
+    assert "unscoped-species" not in cells
+    assert store.tabs == before
+
+
+async def test_empty_property_export_is_valid_workbook_with_headers_and_no_writes():
+    store = MemoryStore()
+    store.tabs = {name: [] for name in TAB_HEADERS}
+    before = deepcopy(store.tabs)
+    processor = make_processor(store)
+
+    result = await request_export(processor)
+
+    assert result.document is not None
+    workbook = load_workbook(BytesIO(result.document.content))
+    assert workbook.sheetnames
+    assert workbook.sheetnames == ["Resumo"]
+    assert list(workbook["Resumo"].values)[0] == ("Informação", "Valor")
+    assert ("Animais", 0) in list(workbook["Resumo"].values)
+    assert ("Eventos", 0) in list(workbook["Resumo"].values)
+    assert any("Ainda não há dados" in str(value) for row in workbook["Resumo"].values for value in row)
+    assert store.tabs == before
+
+
+async def test_export_read_failure_returns_retry_reply_without_document_or_writes():
+    store = MemoryStore()
+    before = deepcopy(store.tabs)
+    store.read_rows = Mock(side_effect=OSError("sensitive provider error"))
+    processor = make_processor(store)
+
+    result = await request_export(processor)
+
+    assert result.document is None
+    assert "Não foi possível gerar a planilha" in result.text
+    assert "sensitive" not in result.text
+    assert store.tabs == before

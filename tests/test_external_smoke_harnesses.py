@@ -55,7 +55,7 @@ def test_sheets_smoke_deletes_tab_after_failed_value_roundtrip():
 
 
 def test_telegram_smoke_confirms_an_authorized_private_inbound_message(monkeypatch):
-    settings = Settings(TELEGRAM_BOT_TOKEN="token", TELEGRAM_ALLOWED_USER_IDS="42")
+    settings = Settings(_env_file=None, TELEGRAM_BOT_TOKEN="token", TELEGRAM_ALLOWED_USER_IDS="42")
     bot = SimpleNamespace(
         get_me=AsyncMock(return_value=SimpleNamespace(id=9)),
         get_webhook_info=AsyncMock(return_value=SimpleNamespace(url="")),
