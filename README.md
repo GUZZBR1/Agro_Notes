@@ -5,7 +5,7 @@ MVP de captura de eventos de manejo animal por Telegram, com interpretação est
 ## Requisitos
 
 - Python 3.11 ou superior
-- Token de bot Telegram e ID(s) numéricos autorizados
+- Token de bot Telegram e códigos de convite para cadastro
 - Chave Groq (provider inicial) ou OpenAI
 - Planilha Google compartilhada com o e-mail da service account
 - JSON de credenciais da service account salvo localmente
@@ -13,18 +13,24 @@ MVP de captura de eventos de manejo animal por Telegram, com interpretação est
 ## Configuração
 
 1. Crie e ative um ambiente virtual; instale `pip install -e .`. Para desenvolvimento, use `pip install -e '.[dev]'`.
-2. Copie `.env.example` para `.env` e preencha os segredos e `GOOGLE_SHEET_ID`. `TELEGRAM_ALLOWED_USER_IDS` aceita IDs separados por vírgulas. Groq é o provider inicial para interpretação e transcrição; defina `INTERPRETATION_PROVIDER` e `TRANSCRIPTION_PROVIDER` independentemente como `groq` ou `openai` para selecionar cada integração. Os nomes anteriores `AI_PROVIDER`, `FARM_PROPERTY_ID`, `FARM_TIMEZONE`, `GOOGLE_CREDENTIALS_FILE` e `GROQ_MODEL` continuam aceitos como aliases. Os modelos Groq são configuráveis.
+2. Copie `.env.example` para `.env` e preencha os segredos e `GOOGLE_SHEET_ID`. `TELEGRAM_ALLOWED_USER_IDS` é opcional e serve somente para migrar usuários antigos no primeiro acesso; convites novos são administrados pelo comando abaixo. Groq é o provider inicial para interpretação e transcrição; defina `INTERPRETATION_PROVIDER` e `TRANSCRIPTION_PROVIDER` independentemente como `groq` ou `openai` para selecionar cada integração. Os nomes anteriores `AI_PROVIDER`, `FARM_PROPERTY_ID`, `FARM_TIMEZONE`, `GOOGLE_CREDENTIALS_FILE` e `GROQ_MODEL` continuam aceitos como aliases. Os modelos Groq são configuráveis.
 3. Coloque o JSON de service account no caminho de `GOOGLE_CREDENTIALS_FILE`; compartilhe a planilha com o e-mail `client_email` do JSON, com permissão de editor.
-4. Inicie com `uvicorn agro_notes.main:app --host 0.0.0.0 --port 8000 --workers 1`. A inicialização cria abas vazias e cabeçalhos ausentes; ela para se encontrar cabeçalhos incompatíveis.
+4. Inicie com `uvicorn agro_notes.main:app --host 0.0.0.0 --port 8000 --workers 1 --no-access-log`. A inicialização cria abas vazias e cabeçalhos ausentes; ela para se encontrar cabeçalhos incompatíveis.
 5. Garanta saída HTTPS para Telegram, Google APIs e o provider de IA escolhido. Long polling não exige webhook público; o processo precisa permanecer ativo.
 
-O processo deve ter **um único worker**: o bloqueio de escrita é local ao processo, e o Google Sheets não oferece transação nem restrição única. `GET /health` retorna `503` se o polling do Telegram estiver parado. O endpoint não valida a saúde posterior da planilha ou do provider de IA.
+O bot deve ter **um único worker**: o Google Sheets não oferece transação nem restrição única para os registros do MVP. O acesso por convite usa bloqueio de arquivo compartilhado; execute o bot e o CLI administrativo no mesmo host, com o mesmo usuário do sistema e diretório temporário. O cliente Sheets serializa chamadas ao transporte HTTP. `GET /health` retorna `503` se o polling do Telegram estiver parado. O endpoint não valida a saúde posterior da planilha ou do provider de IA.
 
 ## Fluxo
 
-Envie texto ou áudio em português no chat privado do bot. Chats de grupo são recusados para evitar expor dados da fazenda a participantes que não estão na whitelist. O bot pede esclarecimentos quando faltam campos; eventos elegíveis são gravados após validação, e os que exigem confirmação mostram uma prévia antes da gravação. Pesagens recebidas por voz sempre exigem confirmação explícita após a prévia, pois o provider STT não fornece uma confiança calibrada para validar números reconhecidos. `/historico <identificador>` consulta os eventos recentes. `/cancel` descarta a última solicitação pendente. O arquivo de áudio fica apenas em memória durante a transcrição; o texto transcrito e metadados de origem são persistidos na planilha. Falhas de download/transcrição ficam auditadas com a referência do áudio, sem salvar os bytes. Configure acesso e retenção da planilha de acordo com esses dados.
+No primeiro contato privado, envie `/start` e depois `/acesso SEU_CODIGO`. O código é consumido uma vez (ou até o limite configurado), e a autorização fica vinculada ao ID numérico do Telegram. Códigos, resgates, tentativas e revogações ficam na aba `Telegram_Access`; somente o hash SHA-256 do convite é armazenado. Gere um convite com `python -m agro_notes.access_admin create-code --expires-in-hours 72 --max-uses 1`; o código é exibido uma única vez. O comando requer credenciais de serviço Google e acesso de escrita à planilha. Guarde o `ID para revogação` exibido para uso em `python -m agro_notes.access_admin revoke-code <ID>`. Revogue uma pessoa com `python -m agro_notes.access_admin revoke-user <TELEGRAM_USER_ID>`. Compartilhe o convite apenas em canal privado.
+
+Execute `revoke-code` na mesma máquina e ambiente de arquivos do bot, com o bot parado. Um bloqueio local SQLite impede que esse comando rode enquanto a instância do bot estiver ativa; uma implantação em outra máquina precisa primeiro parar o bot nela antes de executar a revogação.
+
+Envie texto ou áudio em português no chat privado do bot. Chats de grupo são recusados. O bot pede esclarecimentos quando faltam campos; eventos elegíveis são gravados após validação, e os que exigem confirmação mostram uma prévia antes da gravação. Pesagens recebidas por voz sempre exigem confirmação explícita após a prévia, pois o provider STT não fornece uma confiança calibrada para validar números reconhecidos. `/historico <identificador>` consulta os eventos recentes. `/cancel` descarta a última solicitação pendente. O arquivo de áudio fica apenas em memória durante a transcrição; o texto transcrito e metadados de origem são persistidos na planilha. Falhas de download/transcrição ficam auditadas com a referência do áudio, sem salvar os bytes. Configure acesso e retenção da planilha de acordo com esses dados.
 
 Expressões `hoje`, `ontem` e `amanhã` usam o fuso de `FARM_TIMEZONE`. Se a fala não trouxer data, cadastro, entrada, parto, transferência, vacinação e observação recebem o dia local da propriedade no momento da captura; pesagens exigem data explícita. Expressões de data que o sistema não reconhece pedem esclarecimento.
+
+Para conectar o Drive pessoal e salvar uma exportação XLSX, configure as credenciais OAuth seguindo [docs/GOOGLE_DRIVE_OAUTH_SETUP.md](docs/GOOGLE_DRIVE_OAUTH_SETUP.md). A planilha Google do Agro Notes continua sendo a fonte de verdade; o Drive pessoal recebe somente exportações.
 
 Escopo: nascimento/cadastro, entrada, parto, pesagem, transferência de lote, vacinação reportada (para um animal ou lote identificado) e observação de saúde reportada. Correções simples mostram o evento e valor anterior na prévia e só gravam após confirmação. O histórico individual considera a alocação do animal no lote na data do evento. O sistema não diagnostica nem executa protocolos veterinários.
 

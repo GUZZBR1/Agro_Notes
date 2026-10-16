@@ -34,7 +34,9 @@ def test_unknown_providers_are_rejected(field, value):
 
 
 def test_selected_provider_requires_its_own_credential():
-    settings = Settings(AI_PROVIDER="openai", TRANSCRIPTION_PROVIDER="groq", OPENAI_API_KEY="openai-key")
+    settings = Settings(
+        _env_file=None, AI_PROVIDER="openai", TRANSCRIPTION_PROVIDER="groq", OPENAI_API_KEY="openai-key"
+    )
 
     with pytest.raises(ValueError, match="GROQ_API_KEY"):
         settings.validate_provider_configuration()

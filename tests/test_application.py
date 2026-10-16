@@ -154,6 +154,10 @@ def receive(processor, message_id="chat:1", source="text"):
     )
 
 
+def message_handler(router, name):
+    return next(handler.callback for handler in router.message.handlers if handler.callback.__name__ == name)
+
+
 def test_trusted_context_rejects_invalid_or_timezone_free_capture_time():
     processor = make_processor(MemoryStore())
 
@@ -241,10 +245,7 @@ async def test_voice_to_event_to_history_integrated_path_with_service_doubles():
     async def download(_voice, *, destination):
         destination.write(b"voice-audio")
 
-    voice_handler = next(
-        handler.callback for handler in router.message.handlers if handler.callback.__name__ == "voice"
-    )
-    await voice_handler(voice_message, SimpleNamespace(download=download))
+    await message_handler(router, "voice")(voice_message, SimpleNamespace(download=download))
     history_message = SimpleNamespace(
         from_user=SimpleNamespace(id=42),
         chat=SimpleNamespace(id=100, type="private"),
@@ -254,8 +255,7 @@ async def test_voice_to_event_to_history_integrated_path_with_service_doubles():
         voice=None,
         answer=AsyncMock(return_value=SimpleNamespace(chat=SimpleNamespace(id=100), message_id=21)),
     )
-    text_handler = next(handler.callback for handler in router.message.handlers if handler.callback.__name__ == "text")
-    await text_handler(history_message)
+    await message_handler(router, "text")(history_message)
 
     assert "Observação reportada" in voice_message.answer.call_args.args[0]
     assert store.tabs["06_Eventos"][-1]["processing_status"] == "APPLIED"
@@ -295,10 +295,7 @@ async def test_voice_transcription_failure_is_audited_without_persisting_audio_b
     async def download(_voice, *, destination):
         destination.write(b"audio-must-not-be-stored")
 
-    voice_handler = next(
-        handler.callback for handler in router.message.handlers if handler.callback.__name__ == "voice"
-    )
-    await voice_handler(voice_message, SimpleNamespace(download=download))
+    await message_handler(router, "voice")(voice_message, SimpleNamespace(download=download))
 
     conversation = store.tabs["18_Conversas"][-1]
     audit = store.tabs["99_Audit_Log"][-1]
@@ -963,6 +960,52 @@ async def test_missing_weight_is_clarified_then_applied_as_one_command():
     assert [row["state"] for row in store.tabs["18_Conversas"][-2:]] == ["NEEDS_CLARIFICATION", "COMPLETED"]
 
 
+async def test_bare_hex_identifier_completes_an_authorized_clarification():
+    store = MemoryStore()
+    identifier = "0123456789ABCDEF0123"
+    store.tabs["03_Identificadores_Animal"][0]["value"] = identifier
+    clarification = InterpretationProposal(events=[EventProposal(
+        event_type="HEALTH_OBSERVATION", payload={"observation": "manca"},
+        time_expression="hoje", confidence=0.98,
+    )])
+    completed = InterpretationProposal(events=[EventProposal(
+        event_type="HEALTH_OBSERVATION", payload={"animal_identifier": identifier, "observation": "manca"},
+        time_expression="hoje", confidence=0.98,
+    )])
+    processor = MVPProcessor(
+        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"),
+        store, SequenceInterpreter(clarification, completed),
+    )
+
+    first = await receive(processor)
+    second = await processor.receive(
+        42, identifier, source="text", message_id="chat:2",
+        captured_at=datetime(2026, 10, 13, tzinfo=UTC).isoformat(),
+        device_timezone=None, source_reference=None,
+    )
+
+    assert "Preciso esclarecer" in first.text
+    assert second.text.startswith("✅")
+    assert store.tabs["06_Eventos"][-1]["command_id"] == "tg:42:chat:1"
+    assert store.tabs["18_Conversas"][-1]["state"] == "COMPLETED"
+
+
+@pytest.mark.parametrize("text", ["AGRO-0123456789ABCDEF0123", "/ACESSO 0123456789ABCDEF0123"])
+async def test_processor_does_not_persist_explicit_access_codes(text):
+    store = MemoryStore()
+    processor = make_processor(store)
+
+    result = await processor.receive(
+        42, text, source="text", message_id="chat:1",
+        captured_at=datetime(2026, 10, 13, tzinfo=UTC).isoformat(),
+        device_timezone=None, source_reference=None,
+    )
+
+    assert result.text == "Código de acesso não pode ser usado como registro."
+    assert not store.tabs["18_Conversas"]
+    assert not store.tabs["06_Eventos"]
+
+
 @pytest.mark.asyncio
 async def test_multiple_clarifications_preserve_original_request_and_prior_answers():
     store = MemoryStore()
@@ -1323,6 +1366,86 @@ async def test_authorized_export_returns_workbook_without_interpretation_or_pers
     interpreter.interpret.assert_not_called()
 
 
+async def test_drive_export_reuses_generated_xlsx_and_uses_requesting_telegram_identity():
+    store = MemoryStore()
+    before = deepcopy(store.tabs)
+    drive = SimpleNamespace(
+        upload_for_user=Mock(return_value={"file_id": "drive-file", "web_view_link": "https://drive.test/file"})
+    )
+    interpreter = SimpleNamespace(interpret=Mock(side_effect=AssertionError("export must bypass interpretation")))
+    processor = MVPProcessor(
+        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"), store, interpreter, drive_export=drive
+    )
+
+    result = await request_export(processor, "salva minha planilha no Drive")
+
+    assert result.document is None
+    assert "Planilha salva" in result.text
+    assert "https://drive.test/file" in result.text
+    drive.upload_for_user.assert_called_once()
+    user_id, document = drive.upload_for_user.call_args.args
+    assert user_id == 42
+    assert document.filename.endswith(".xlsx")
+    assert document.content[:2] == b"PK"
+    assert store.tabs == before
+    interpreter.interpret.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_drive_temporary_unavailability_suggests_retry_without_reconnect():
+    from agro_notes.google_drive import DriveUnavailableError
+
+    store = MemoryStore()
+    drive = SimpleNamespace(upload_for_user=Mock(side_effect=DriveUnavailableError("temporary outage")))
+    processor = MVPProcessor(
+        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"),
+        store,
+        SimpleNamespace(interpret=Mock()),
+        drive_export=drive,
+    )
+
+    result = await request_export(processor, "salva minha planilha no Drive")
+
+    assert "temporariamente indisponível" in result.text
+    assert "Tente novamente" in result.text
+    assert "/conectar_drive" not in result.text
+    drive.upload_for_user.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_export_waits_for_in_progress_event_write_lock():
+    store = MemoryStore()
+    processor = MVPProcessor(
+        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"),
+        store,
+        SimpleNamespace(interpret=Mock()),
+    )
+
+    async with processor._writer_lock:
+        export_task = asyncio.create_task(request_export(processor))
+        await asyncio.sleep(0.02)
+        assert not export_task.done()
+
+    result = await export_task
+    assert result.document is not None
+
+
+async def test_unauthorized_drive_export_never_uses_a_user_connection():
+    store = MemoryStore()
+    drive = SimpleNamespace(upload_for_user=Mock(side_effect=AssertionError("must not upload")))
+    processor = MVPProcessor(
+        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"),
+        store,
+        SimpleNamespace(interpret=Mock()),
+        drive_export=drive,
+    )
+
+    result = await request_export(processor, "salva minha planilha no Drive", user_id=99)
+
+    assert result.text == "Acesso não autorizado."
+    drive.upload_for_user.assert_not_called()
+
+
 async def test_export_unauthorized_user_cannot_read_or_interpret_data():
     store = SimpleNamespace(read_rows=Mock(side_effect=AssertionError("unauthorized read")))
     interpreter = SimpleNamespace(interpret=Mock(side_effect=AssertionError("unauthorized interpretation")))
@@ -1332,6 +1455,23 @@ async def test_export_unauthorized_user_cannot_read_or_interpret_data():
 
     assert result.document is None
     assert result.text == "Acesso não autorizado."
+    store.read_rows.assert_not_called()
+    interpreter.interpret.assert_not_called()
+
+
+async def test_export_persisted_access_denial_overrides_legacy_whitelist():
+    store = SimpleNamespace(read_rows=Mock(side_effect=AssertionError("unauthorized read")))
+    access = SimpleNamespace(is_authorized=AsyncMock(return_value=False))
+    interpreter = SimpleNamespace(interpret=Mock())
+    processor = MVPProcessor(
+        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"), store, interpreter, access=access
+    )
+
+    result = await request_export(processor)
+
+    assert result.document is None
+    assert result.text == "Acesso não autorizado."
+    access.is_authorized.assert_awaited_once_with(42)
     store.read_rows.assert_not_called()
     interpreter.interpret.assert_not_called()
 

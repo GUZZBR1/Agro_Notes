@@ -9,16 +9,20 @@ from typing import Any
 
 from aiogram import Bot
 
+from .access_control import AccessService
 from .settings import Settings, get_settings
+from .sheets import GoogleSheetsStore
 
 SMOKE_UPDATE_TYPES = ["message", "callback_query"]
 
 
-async def _smoke(bot: Any, settings: Settings, *, wait_seconds: int = 30) -> dict[str, object]:
+async def _smoke(
+    bot: Any, settings: Settings, *, wait_seconds: int = 30, access: AccessService | None = None
+) -> dict[str, object]:
     if not settings.telegram_bot_token.strip():
         return {"status": "WAITING_FOR_EXTERNAL_CREDENTIALS", "required": "TELEGRAM_BOT_TOKEN"}
-    if not settings.allowed_user_ids:
-        return {"status": "WAITING_FOR_EXTERNAL_CREDENTIALS", "required": "TELEGRAM_ALLOWED_USER_IDS"}
+    if access is None and not settings.allowed_user_ids:
+        return {"status": "WAITING_FOR_EXTERNAL_CREDENTIALS", "required": "GOOGLE_SHEET_ID"}
 
     identity = await bot.get_me()
     webhook = await bot.get_webhook_info()
@@ -50,10 +54,13 @@ async def _smoke(bot: Any, settings: Settings, *, wait_seconds: int = 30) -> dic
         or message.text != challenge
         or message.chat.type != "private"
         or user is None
-        or user.id not in settings.allowed_user_ids
     ):
         # Do not set an offset: an unrelated update remains available to the
         # application when the operator starts it after this smoke check.
+        return {"status": "UNEXPECTED_UPDATE_PENDING", "bot_id": identity.id}
+
+    allowed = await access.is_authorized(user.id) if access else user.id in settings.allowed_user_ids
+    if not allowed:
         return {"status": "UNEXPECTED_UPDATE_PENDING", "bot_id": identity.id}
 
     await bot.send_message(message.chat.id, "Smoke do Telegram: recebimento confirmado.")
@@ -68,16 +75,21 @@ async def _smoke(bot: Any, settings: Settings, *, wait_seconds: int = 30) -> dic
     return {"status": "PASS", "bot_id": identity.id, "inbound_message_verified": True}
 
 
-async def smoke(settings: Settings | None = None, bot: Any | None = None) -> dict[str, object]:
+async def smoke(
+    settings: Settings | None = None, bot: Any | None = None, *, access: AccessService | None = None
+) -> dict[str, object]:
     settings = settings or get_settings()
     if not settings.telegram_bot_token.strip():
         return {"status": "WAITING_FOR_EXTERNAL_CREDENTIALS", "required": "TELEGRAM_BOT_TOKEN"}
-    if not settings.allowed_user_ids:
-        return {"status": "WAITING_FOR_EXTERNAL_CREDENTIALS", "required": "TELEGRAM_ALLOWED_USER_IDS"}
+    if access is None and not settings.allowed_user_ids and not settings.google_sheet_id.strip():
+        return {"status": "WAITING_FOR_EXTERNAL_CREDENTIALS", "required": "GOOGLE_SHEET_ID"}
     owns_bot = bot is None
     bot = bot or Bot(settings.telegram_bot_token)
     try:
-        return await _smoke(bot, settings)
+        if access is None and settings.google_sheet_id.strip():
+            store = await asyncio.to_thread(GoogleSheetsStore.from_credentials, settings)
+            access = AccessService(store, settings)
+        return await _smoke(bot, settings, access=access)
     except Exception as exc:
         return {"status": "EXTERNAL_PROVIDER_BLOCKED", "reason": type(exc).__name__}
     finally:

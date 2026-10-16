@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import ANY, AsyncMock
+from unittest.mock import ANY, AsyncMock, Mock
 
 import pytest
 from aiogram.types import Chat, Message, User
@@ -35,10 +35,6 @@ def message(user_id=42, text="nasceram dois bezerros", voice=None):
     )
 
 
-def message_handler(router, name):
-    return next(handler.callback for handler in router.message.handlers if handler.callback.__name__ == name)
-
-
 def processor():
     return SimpleNamespace(
         receive=AsyncMock(return_value=BotReply("Confira", "pending-1")),
@@ -46,6 +42,10 @@ def processor():
         confirm=AsyncMock(return_value=BotReply("Registrado")),
         cancel=AsyncMock(return_value=BotReply("Cancelado")),
     )
+
+
+def message_handler(router, name):
+    return next(handler.callback for handler in router.message.handlers if handler.callback.__name__ == name)
 
 
 def test_whitelist_and_actual_download_cap():
@@ -79,14 +79,36 @@ async def test_unauthorized_text_audio_callbacks_never_process():
     transcriber = SimpleNamespace(transcribe=AsyncMock())
     router = build_router(proc, settings(), transcriber)
     msg = message(user_id=99)
-    await router.message.handlers[0].callback(msg)
-    await router.message.handlers[1].callback(msg, SimpleNamespace(download=AsyncMock()))
-    await router.message.handlers[2].callback(msg)
+    await message_handler(router, "start")(msg)
+    await message_handler(router, "voice")(msg, SimpleNamespace(download=AsyncMock()))
+    await message_handler(router, "text")(msg)
     query = SimpleNamespace(from_user=SimpleNamespace(id=99), answer=AsyncMock())
     await router.callback_query.handlers[0].callback(query)
     proc.receive.assert_not_awaited()
     proc.confirm.assert_not_awaited()
     transcriber.transcribe.assert_not_awaited()
+
+
+async def test_access_onboarding_keeps_code_out_of_processor():
+    proc = processor()
+    access = SimpleNamespace(
+        is_authorized=AsyncMock(return_value=False),
+        start=AsyncMock(return_value="Envie o código"),
+        redeem=AsyncMock(return_value="Código inválido ou indisponível."),
+        set_waiting=AsyncMock(),
+    )
+    router = build_router(proc, settings(), access=access)
+    msg = message(user_id=99, text="/start")
+    msg.from_user.first_name = "User"
+    msg.from_user.last_name = ""
+    msg.from_user.username = None
+    await message_handler(router, "start")(msg)
+    msg.text = "0123456789ABCDEF0123456789ABCDEF"
+    await message_handler(router, "text")(msg)
+
+    access.start.assert_awaited_once_with(99, "User", "")
+    access.redeem.assert_awaited_once_with(99, msg.text, "User", "")
+    proc.receive.assert_not_awaited()
 
 
 async def test_voice_transcription_forwarded_with_message_key():
@@ -97,7 +119,7 @@ async def test_voice_transcription_forwarded_with_message_key():
     async def download(_voice, *, destination):
         destination.write(b"ogg-bytes")
 
-    await router.message.handlers[1].callback(
+    await message_handler(router, "voice")(
         message(voice=SimpleNamespace(file_size=9, file_id="file-1")),
         SimpleNamespace(download=download),
     )
@@ -119,7 +141,7 @@ async def test_callbacks_use_persisted_command_id_and_bind_reply_message(monkeyp
     proc = processor()
     router = build_router(proc, settings(), SimpleNamespace(transcribe=AsyncMock()))
     msg = message()
-    await router.message.handlers[2].callback(msg)
+    await message_handler(router, "text")(msg)
     data = msg.answer.call_args.kwargs["reply_markup"].inline_keyboard[0][button_index].callback_data
     assert data == f"{action}:pending-1"
     proc.bind_confirmation.assert_awaited_once_with(42, "pending-1", chat_id=100, message_id=20)
@@ -164,7 +186,7 @@ async def test_group_chat_is_rejected_before_processing():
     router = build_router(proc, settings(), SimpleNamespace(transcribe=AsyncMock()))
     msg = message()
     msg.chat.type = "group"
-    await router.message.handlers[2].callback(msg)
+    await message_handler(router, "text")(msg)
 
     proc.receive.assert_not_awaited()
     msg.answer.assert_awaited_once()
@@ -174,7 +196,7 @@ async def test_pending_callback_data_survives_router_recreation(monkeypatch):
     proc = processor()
     first_router = build_router(proc, settings(), SimpleNamespace(transcribe=AsyncMock()))
     msg = message()
-    await first_router.message.handlers[2].callback(msg)
+    await message_handler(first_router, "text")(msg)
     data = msg.answer.call_args.kwargs["reply_markup"].inline_keyboard[0][0].callback_data
 
     second_router = build_router(proc, settings(), SimpleNamespace(transcribe=AsyncMock()))
@@ -222,6 +244,81 @@ async def test_export_sends_buffered_document_with_exact_bytes_filename_and_capt
     proc.bind_confirmation.assert_not_awaited()
 
 
+async def test_connect_drive_command_sends_link_only_to_authorized_private_user():
+    proc = processor()
+    drive = SimpleNamespace(
+        configured=True,
+        is_connected=lambda _user_id: False,
+        create_authorization_url=lambda user_id: f"https://accounts.google.test/auth?user={user_id}",
+    )
+    router = build_router(proc, settings(), google_drive=drive)
+    msg = message(text="/conectar_drive")
+
+    await message_handler(router, "connect_drive_command")(msg)
+
+    msg.answer.assert_awaited_once()
+    assert "https://accounts.google.test/auth?user=42" in msg.answer.call_args.args[0]
+    proc.receive.assert_not_awaited()
+
+
+async def test_conversational_connect_drive_and_disconnect_drive_are_handled_without_interpretation():
+    proc = processor()
+    drive = SimpleNamespace(
+        configured=True,
+        is_connected=lambda _user_id: False,
+        create_authorization_url=lambda _user_id: "https://accounts.google.test/auth",
+        disconnect=lambda _user_id: True,
+    )
+    router = build_router(proc, settings(), google_drive=drive)
+    msg = message(text="conectar meu Google Drive")
+
+    await message_handler(router, "text")(msg)
+    assert "https://accounts.google.test/auth" in msg.answer.call_args.args[0]
+    msg.answer.reset_mock()
+    msg.text = "desconectar meu Google Drive"
+    await message_handler(router, "text")(msg)
+
+    msg.answer.assert_awaited_once()
+    assert "desconectado" in msg.answer.call_args.args[0]
+    proc.receive.assert_not_awaited()
+
+
+async def test_connect_drive_command_refuses_group_chat_and_unauthorized_user():
+    proc = processor()
+    drive = SimpleNamespace(configured=True, create_authorization_url=lambda _user_id: "forbidden")
+    router = build_router(proc, settings(), google_drive=drive)
+    msg = message(user_id=99, text="/conectar_drive")
+    await message_handler(router, "connect_drive_command")(msg)
+    msg.answer.assert_awaited_once_with("Acesso não autorizado.")
+
+    msg = message(text="/conectar_drive")
+    msg.chat.type = "group"
+    await message_handler(router, "connect_drive_command")(msg)
+    assert "chat privado" in msg.answer.call_args.args[0]
+
+
+async def test_drive_confirmation_button_is_bound_to_clicking_telegram_account(monkeypatch):
+    proc = processor()
+    drive = SimpleNamespace(confirm_connection=Mock(return_value=False))
+    router = build_router(proc, settings(), google_drive=drive)
+    sent = Message(message_id=20, date=0, chat=Chat(id=100, type="private"))
+    monkeypatch.setattr(Message, "edit_reply_markup", AsyncMock())
+    monkeypatch.setattr(Message, "answer", AsyncMock())
+    query = SimpleNamespace(
+        from_user=User(id=43, is_bot=False, first_name="Other authorized user"),
+        data="drive_connect:connection-id",
+        message=sent,
+        answer=AsyncMock(),
+    )
+
+    await router.callback_query.handlers[0].callback(query)
+
+    drive.confirm_connection.assert_called_once_with(43, "connection-id")
+    query.answer.assert_awaited_once()
+    assert "expirou ou foi revogada" in query.answer.call_args.args[0]
+    Message.answer.assert_not_awaited()
+
+
 async def test_voice_export_sends_document_after_transcription():
     proc = processor()
     proc.receive.return_value = BotReply("Planilha", document=ExportDocument("farm.xlsx", b"xlsx-bytes"))
@@ -242,7 +339,7 @@ async def test_voice_export_sends_document_after_transcription():
 
 
 @pytest.mark.parametrize("source", ["text", "voice"])
-async def test_export_delivery_failure_returns_retry_message_without_confirmation(source):
+async def test_export_delivery_failure_returns_retry_message_without_success_or_confirmation(source):
     proc = processor()
     proc.receive.return_value = BotReply("Planilha pronta", document=ExportDocument("farm.xlsx", b"xlsx-bytes"))
     transcriber = SimpleNamespace(transcribe=AsyncMock(return_value="/exportar"))
@@ -253,6 +350,7 @@ async def test_export_delivery_failure_returns_retry_message_without_confirmatio
     if source == "voice":
         async def download(_voice, *, destination):
             destination.write(b"ogg-bytes")
+
         await message_handler(router, "voice")(msg, SimpleNamespace(download=download))
     else:
         await message_handler(router, "text")(msg)
@@ -291,19 +389,39 @@ async def test_export_group_chat_cannot_process_or_receive_document():
 
 async def test_export_rechecks_access_before_document_delivery():
     proc = processor()
-    settings_obj = settings()
-
-    async def make_reply(*args, **kwargs):
-        settings_obj.telegram_allowed_user_ids = "43"
-        return BotReply("Planilha", document=ExportDocument("farm.xlsx", b"private-data"))
-
-    proc.receive.side_effect = make_reply
-    router = build_router(proc, settings_obj, SimpleNamespace(transcribe=AsyncMock()))
+    proc.receive.return_value = BotReply("Planilha", document=ExportDocument("farm.xlsx", b"private-data"))
+    access = SimpleNamespace(is_authorized=AsyncMock(side_effect=[True, True, False]))
+    router = build_router(proc, settings(), SimpleNamespace(transcribe=AsyncMock()), access=access)
     msg = message(text="/exportar")
 
     await message_handler(router, "text")(msg)
 
     proc.receive.assert_awaited_once()
+    assert access.is_authorized.await_count == 3
+    assert all(call.args == (42,) for call in access.is_authorized.call_args_list)
     msg.answer_document.assert_not_awaited()
     msg.answer.assert_awaited_once_with("Acesso não autorizado.")
     proc.bind_confirmation.assert_not_awaited()
+async def test_authorized_explicit_access_codes_never_reach_processor():
+    proc = processor()
+    access = SimpleNamespace(is_authorized=AsyncMock(return_value=True), redeem=AsyncMock())
+    router = build_router(proc, settings(), access=access)
+    handler = message_handler(router, "text")
+
+    await handler(message(text="AGRO-0123456789ABCDEF0123"))
+    await handler(message(text="/ACESSO 0123456789ABCDEF0123"))
+
+    proc.receive.assert_not_awaited()
+    access.redeem.assert_not_awaited()
+
+
+async def test_authorized_bare_hex_identifier_reaches_processor():
+    proc = processor()
+    access = SimpleNamespace(is_authorized=AsyncMock(return_value=True), redeem=AsyncMock())
+    router = build_router(proc, settings(), access=access)
+    identifier = "0123456789ABCDEF0123"
+
+    await message_handler(router, "text")(message(text=identifier))
+
+    assert proc.receive.await_args.args == (42, identifier)
+    access.redeem.assert_not_awaited()

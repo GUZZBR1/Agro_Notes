@@ -8,7 +8,9 @@ writers and reconcile partial writes rather than blindly retrying a command.
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Mapping, Sequence
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +57,18 @@ TAB_HEADERS: dict[str, tuple[str, ...]] = {
     "19_Usuarios": tuple(
         "user_id display_name role property_id permissions_profile active valid_from valid_to".split()
     ),
+    "Telegram_Access": tuple(
+        "event_id event_type telegram_user_id display_name username property_id role state access_code_id "
+        "code_hash created_at expires_at max_uses reason attempt_count blocked_until actor_id".split()
+    ),
+    "Google_OAuth_States": tuple(
+        "event_id state_hash telegram_user_id property_id created_at expires_at status consumed_at "
+        "encrypted_code_verifier".split()
+    ),
+    "Google_Connections": tuple(
+        "connection_id telegram_user_id property_id provider google_account_ref encrypted_refresh_token "
+        "scopes connected_at expires_at status revoked_at".split()
+    ),
     "20_Event_Effects": tuple(
         "effect_id property_id source_event_id effect_type target_type target_id idempotency_key status attempt_count retryable error before_ref after_ref reversed_by updated_at".split()  # noqa: E501
     ),
@@ -92,6 +106,15 @@ def _cell(value: Any) -> Any:
     return str(value)
 
 
+def _serialized_service_call(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._service_lock:
+            return method(self, *args, **kwargs)
+
+    return wrapped
+
+
 class GoogleSheetsStore:
     def __init__(
         self,
@@ -118,6 +141,7 @@ class GoogleSheetsStore:
             )
             service = api_builder("sheets", "v4", credentials=credentials, cache_discovery=False)
         self.service = service
+        self._service_lock = threading.RLock()
 
     @classmethod
     def from_credentials(cls, settings: Any, *, api_builder: Any = None) -> GoogleSheetsStore:
@@ -128,6 +152,7 @@ class GoogleSheetsStore:
         suffix = "1" if header_only else ""
         return f"'{tab}'!A1:{_column(len(headers))}{suffix}"
 
+    @_serialized_service_call
     def _values(self, tab: str, *, header_only: bool = False) -> list[list[Any]]:
         response = (
             self.service.spreadsheets()
@@ -141,6 +166,7 @@ class GoogleSheetsStore:
         )
         return response.get("values", [])
 
+    @_serialized_service_call
     def bootstrap(self) -> None:
         sheets = self.service.spreadsheets()
         metadata = sheets.get(spreadsheetId=self.spreadsheet_id, fields="sheets.properties.title").execute()
@@ -162,6 +188,7 @@ class GoogleSheetsStore:
 
     ensure_schema = bootstrap
 
+    @_serialized_service_call
     def read_rows(self, tab: str) -> list[dict[str, Any]]:
         values = self._values(tab)
         if not values:
@@ -175,6 +202,7 @@ class GoogleSheetsStore:
             if any(value != "" for value in row)
         ]
 
+    @_serialized_service_call
     def append_rows(self, tab: str, rows: Sequence[Mapping[str, Any]]) -> Any:
         headers = TAB_HEADERS[tab]
         if not rows:
