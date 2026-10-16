@@ -20,6 +20,16 @@ class ProviderOutcome(StrEnum):
     INVALID_SCHEMA = "INVALID_SCHEMA"
 
 
+class TranscriptionErrorClass(StrEnum):
+    TEMPORARY_RATE_LIMIT = "TEMPORARY_RATE_LIMIT"
+    DAILY_QUOTA_EXHAUSTED = "DAILY_QUOTA_EXHAUSTED"
+    UNKNOWN_RATE_LIMIT = "UNKNOWN_RATE_LIMIT"
+    TRANSIENT_NETWORK_ERROR = "TRANSIENT_NETWORK_ERROR"
+    PROVIDER_ERROR = "PROVIDER_ERROR"
+    INVALID_REQUEST = "INVALID_REQUEST"
+    AUTHENTICATION_ERROR = "AUTHENTICATION_ERROR"
+
+
 class ProviderMetadata(Model):
     """Operational evidence without raw responses, audio, or credentials.
 
@@ -34,6 +44,10 @@ class ProviderMetadata(Model):
     outcome: ProviderOutcome
     schema_valid: bool | None = None
     retry_count: int = Field(default=0, ge=0)
+    error_class: TranscriptionErrorClass | None = None
+    status_code: int | None = Field(default=None, ge=100, le=599)
+    retry_after_seconds: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    reset_requests_seconds: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     request_id: str | None = None
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
@@ -49,6 +63,10 @@ class ProviderMetadata(Model):
             "provider_outcome": self.outcome.value,
             "provider_schema_valid": self.schema_valid,
             "provider_retry_count": self.retry_count,
+            "provider_error_class": self.error_class.value if self.error_class else None,
+            "provider_status_code": self.status_code,
+            "provider_retry_after_seconds": self.retry_after_seconds,
+            "provider_reset_requests_seconds": self.reset_requests_seconds,
             "provider_request_id": self.request_id,
             "provider_input_tokens": self.input_tokens,
             "provider_output_tokens": self.output_tokens,

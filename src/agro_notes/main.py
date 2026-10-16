@@ -18,7 +18,7 @@ from .process_lock import ProcessLock
 from .provider_factory import build_interpreter, build_transcriber
 from .settings import get_settings
 from .sheets import GoogleSheetsStore
-from .telegram_bot import build_router
+from .telegram_bot import DurableTranscriptionQueue, build_router
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -47,6 +47,7 @@ async def lifespan(app: FastAPI):
         access = AccessService(store, settings)
         google_drive = GoogleDriveOAuth(store, settings, access)
         transcriber = None
+        transcription_queue = None
         interpreter = None
         bot = None
         dispatcher = None
@@ -55,9 +56,20 @@ async def lifespan(app: FastAPI):
             interpreter = build_interpreter(settings)
             processor = MVPProcessor(settings, store, interpreter, access=access, drive_export=google_drive)
             transcriber = build_transcriber(settings)
+            transcription_queue = DurableTranscriptionQueue(processor, settings, transcriber)
             dispatcher = Dispatcher()
-            dispatcher.include_router(build_router(processor, settings, transcriber, access, google_drive))
+            dispatcher.include_router(
+                build_router(
+                    processor,
+                    settings,
+                    transcriber=transcriber,
+                    transcription_queue=transcription_queue,
+                    access=access,
+                    google_drive=google_drive,
+                )
+            )
             bot = Bot(settings.telegram_bot_token)
+            await transcription_queue.start(bot)
             polling = asyncio.create_task(dispatcher.start_polling(bot, close_bot_session=False))
             app.state.store = store
             app.state.processor = processor
@@ -80,6 +92,11 @@ async def lifespan(app: FastAPI):
                     logger.error("Telegram polling task failed (%s)", type(exc).__name__)
             if dispatcher:
                 await _drain_update_handlers(dispatcher)
+            if transcription_queue:
+                try:
+                    await transcription_queue.close()
+                except Exception as exc:
+                    logger.error("Transcription recovery shutdown failed (%s)", type(exc).__name__)
             if bot:
                 try:
                     await bot.session.close()

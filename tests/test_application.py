@@ -1,4 +1,5 @@
 import asyncio
+import json
 from copy import deepcopy
 from datetime import UTC, datetime
 from io import BytesIO
@@ -14,7 +15,7 @@ from agro_notes.exports import build_property_export
 from agro_notes.interpreter import StructuredOutputInterpreter
 from agro_notes.settings import Settings
 from agro_notes.sheets import TAB_HEADERS
-from agro_notes.telegram_bot import build_router
+from agro_notes.telegram_bot import DurableTranscriptionQueue, build_router
 
 
 class MemoryStore:
@@ -186,6 +187,129 @@ async def test_ready_health_observation_appends_event_target_and_audit_once():
     assert store.tabs["07_Evento_Animais"][0]["animal_id"] == "animal-42"
     assert store.tabs["20_Event_Effects"][-1]["status"] == "APPLIED"
     assert any(row["action"] == "DUPLICATE_DELIVERY" for row in store.tabs["99_Audit_Log"])
+
+
+@pytest.mark.asyncio
+async def test_transcription_retry_state_is_durable_and_does_not_block_canonical_processing():
+    store = MemoryStore()
+    processor = make_processor(store)
+    await processor.persist_transcription_state(
+        42,
+        message_id="chat:voice-1",
+        captured_at=datetime(2026, 10, 13, tzinfo=UTC).isoformat(),
+        received_at=datetime(2026, 10, 13, tzinfo=UTC).isoformat(),
+        source_reference="telegram-file-id",
+        state="RETRY_WAIT",
+        queue_metadata={"retry_count": 1, "next_attempt_at": "2026-10-13T01:00:00+00:00"},
+        response="waiting",
+    )
+
+    jobs = await processor.transcription_jobs()
+    assert len(jobs) == 1
+    assert jobs[0]["state"] == "RETRY_WAIT"
+    assert jobs[0]["audio_ref"] == "telegram-file-id"
+    assert jobs[0]["command_id"] == "tg:42:chat:voice-1"
+    assert json.loads(jobs[0]["pending_command_json"])["idempotency_key"] == "tg:42:chat:voice-1"
+
+    # A recovered transcript follows the same command through normal processing.
+    await processor.persist_transcription_state(
+        42,
+        message_id="chat:voice-1",
+        captured_at=jobs[0]["captured_at"],
+        received_at=jobs[0]["received_at"],
+        source_reference="telegram-file-id",
+        state="TRANSCRIBED",
+        queue_metadata={"retry_count": 1},
+        transcript="relato",
+    )
+    result = await processor.receive(
+        42,
+        "relato",
+        source="voice",
+        message_id="chat:voice-1",
+        captured_at=jobs[0]["captured_at"],
+        device_timezone=None,
+        source_reference="telegram-file-id",
+        received_at=jobs[0]["received_at"],
+    )
+    assert result.text.startswith("✅")
+    duplicate = await processor.receive(
+        42,
+        "relato",
+        source="voice",
+        message_id="chat:voice-1",
+        captured_at=jobs[0]["captured_at"],
+        device_timezone=None,
+        source_reference="telegram-file-id",
+        received_at=jobs[0]["received_at"],
+    )
+    assert "já foi registrado" in duplicate.text
+    assert len(store.tabs["06_Eventos"]) == 2
+    assert (await processor.transcription_jobs()) == []
+
+
+@pytest.mark.asyncio
+async def test_awaiting_voice_delivery_preserves_confirmation_and_queue_state():
+    store = MemoryStore()
+    processor = make_processor(store, "WEIGHING", {"animal_identifier": "42", "weight_kg": 712})
+    captured_at = datetime(2026, 10, 13, tzinfo=UTC).isoformat()
+    received_at = datetime.now(UTC).isoformat()
+    await processor.persist_transcription_state(
+        42,
+        message_id="chat:voice-2",
+        captured_at=captured_at,
+        received_at=received_at,
+        source_reference="telegram-file-id",
+        state="TRANSCRIBED",
+        queue_metadata={"retry_count": 0},
+        transcript="relato",
+    )
+
+    preview = await processor.receive(
+        42,
+        "relato",
+        source="voice",
+        message_id="chat:voice-2",
+        captured_at=captured_at,
+        device_timezone=None,
+        source_reference="telegram-file-id",
+        received_at=received_at,
+    )
+    assert preview.pending_id == "tg:42:chat:voice-2"
+
+    queue_metadata = {"retry_count": 0, "awaiting_delivery": True, "pending_id": preview.pending_id}
+    await processor.persist_transcription_state(
+        42,
+        message_id="chat:voice-2",
+        captured_at=captured_at,
+        received_at=received_at,
+        source_reference="telegram-file-id",
+        state="TRANSCRIBED",
+        queue_metadata=queue_metadata,
+        transcript="relato",
+        response=preview.text,
+    )
+
+    queued = await processor.transcription_job("chat:voice-2")
+    assert queued["state"] == "WAITING_CONFIRMATION"
+    assert json.loads(queued["pending_command_json"])["events"]
+    assert DurableTranscriptionQueue._metadata(queued)["awaiting_delivery"]
+    assert len(await processor.transcription_jobs()) == 1
+
+    await processor.mark_transcription_delivered(
+        "chat:voice-2", queue_metadata=queue_metadata, transcript="relato", response=preview.text
+    )
+    delivered = await processor.transcription_job("chat:voice-2")
+    assert delivered["state"] == "WAITING_CONFIRMATION"
+    assert json.loads(delivered["pending_command_json"])["events"]
+    assert DurableTranscriptionQueue._metadata(delivered).get("awaiting_delivery") is None
+    assert await processor.transcription_jobs() == []
+
+    await processor.bind_confirmation(42, preview.pending_id, chat_id=100, message_id=101)
+    confirmed = await processor.confirm(
+        42, preview.pending_id, source_chat_id=100, source_message_id=101
+    )
+    assert confirmed.text.startswith("✅")
 
 
 @pytest.mark.asyncio
@@ -1267,6 +1391,80 @@ async def test_simple_weight_success_reply_contains_animal_weight_and_date():
     assert "animal 42" in response.text
     assert "512 kg" in response.text
     assert "12/10/2026" in response.text
+
+
+@pytest.mark.asyncio
+async def test_transcription_queue_rows_do_not_hide_pending_clarification_context():
+    store = MemoryStore()
+    clarification = InterpretationProposal(
+        events=[
+            EventProposal(
+                event_type="WEIGHING",
+                payload={"animal_identifier": "42"},
+                time_expression="hoje",
+                confidence=0.98,
+            )
+        ]
+    )
+    completed = InterpretationProposal(
+        events=[
+            EventProposal(
+                event_type="WEIGHING",
+                payload={"animal_identifier": "42", "weight_kg": 512},
+                time_expression="hoje",
+                confidence=0.98,
+            )
+        ]
+    )
+
+    class TwoStepInterpreter:
+        def __init__(self):
+            self.proposals = [clarification, completed]
+
+        def interpret(self, _text):
+            return self.proposals.pop(0)
+
+    processor = MVPProcessor(
+        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"),
+        store,
+        TwoStepInterpreter(),
+    )
+    first = await receive(processor, "chat:clarification", source="text")
+    assert "Preciso esclarecer" in first.text
+
+    captured_at = datetime(2026, 10, 13, tzinfo=UTC).isoformat()
+    received_at = datetime.now(UTC).isoformat()
+    for state in ("PENDING_TRANSCRIPTION", "TRANSCRIBED"):
+        await processor.persist_transcription_state(
+            42,
+            message_id="chat:voice-answer",
+            captured_at=captured_at,
+            received_at=received_at,
+            source_reference="telegram-file-id",
+            state=state,
+            queue_metadata={"retry_count": 0},
+            transcript="512 quilos" if state == "TRANSCRIBED" else "",
+        )
+
+    result = await processor.receive(
+        42,
+        "512 quilos",
+        source="voice",
+        message_id="chat:voice-answer",
+        captured_at=captured_at,
+        device_timezone=None,
+        source_reference="telegram-file-id",
+        received_at=received_at,
+    )
+
+    assert result.pending_id == "tg:42:chat:clarification"
+    assert "Confirme para gravar" in result.text
+    clarification_row = next(
+        row for row in reversed(store.tabs["18_Conversas"])
+        if row.get("command_id") == "tg:42:chat:clarification"
+    )
+    assert clarification_row["state"] == "WAITING_CONFIRMATION"
+    assert json.loads(clarification_row["pending_command_json"])["events"]
 
 
 async def request_export(processor, text="/exportar", user_id=42, source="text"):

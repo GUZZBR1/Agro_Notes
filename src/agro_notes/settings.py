@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     openai_model: str = Field(default="gpt-4.1-mini", alias="OPENAI_MODEL")
     openai_transcription_model: str = Field(default="gpt-4o-mini-transcribe", alias="OPENAI_TRANSCRIPTION_MODEL")
     voice_max_bytes: int = Field(default=18_000_000, gt=0, le=20_000_000)
+    groq_max_retries: int = Field(default=3, ge=0, le=10, alias="GROQ_MAX_RETRIES")
+    groq_retry_base_seconds: float = Field(default=5, gt=0, le=300, alias="GROQ_RETRY_BASE_SECONDS")
+    groq_retry_max_seconds: float = Field(default=60, gt=0, le=3600, alias="GROQ_RETRY_MAX_SECONDS")
+    groq_retry_after_max_seconds: float = Field(default=86400, gt=0, le=604800, alias="GROQ_RETRY_AFTER_MAX_SECONDS")
+    groq_daily_quota_retry_seconds: float = Field(default=21600, gt=0, le=86400, alias="GROQ_DAILY_QUOTA_RETRY_SECONDS")
     min_interpretation_confidence: float = Field(default=0.75, ge=0, le=1)
 
     @field_validator("farm_timezone")
