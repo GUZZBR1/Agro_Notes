@@ -570,5 +570,3 @@ def match_drive_connection_intent(text: str) -> str | None:
     if normalized.startswith("/conectar_drive") or ("drive" in normalized and "conectar" in normalized):
         return "connect"
     return None
-
-
