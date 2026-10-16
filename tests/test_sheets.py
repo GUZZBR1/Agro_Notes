@@ -1,4 +1,7 @@
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -66,6 +69,35 @@ class SheetsTests(unittest.TestCase):
         self.api = FakeSheets()
         self.store = GoogleSheetsStore("spreadsheet", service=self.api)
         self.store.bootstrap()
+
+    def test_shared_transport_requests_are_serialized_across_threads(self):
+        state = {"active": 0, "maximum": 0}
+        state_lock = threading.Lock()
+
+        class SlowRequest:
+            def execute(self):
+                with state_lock:
+                    state["active"] += 1
+                    state["maximum"] = max(state["maximum"], state["active"])
+                time.sleep(0.02)
+                with state_lock:
+                    state["active"] -= 1
+                return {"values": [list(TAB_HEADERS["00_Config"])]}
+
+        class SlowSheets:
+            def spreadsheets(self):
+                return self
+
+            def values(self):
+                return self
+
+            def get(self, **_kwargs):
+                return SlowRequest()
+
+        store = GoogleSheetsStore("spreadsheet", service=SlowSheets())
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            list(executor.map(store.read_rows, ["00_Config", "00_Config"]))
+        self.assertEqual(state["maximum"], 1)
 
     def test_bootstrap_is_repeatable_and_does_not_erase_data(self):
         self.store.append_animal({"animal_id": "animal", "property_id": "farm", "birth_property_id": "farm"})

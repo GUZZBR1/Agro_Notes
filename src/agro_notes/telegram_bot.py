@@ -6,14 +6,17 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Any, Protocol
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter, TelegramServerError
-from aiogram.filters import CommandStart
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.filters import Command, CommandStart
+from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from openai import APIConnectionError, APIStatusError, RateLimitError
 
+from .access_control import AccessService, normalize_code
+from .exports import ExportDocument
+from .google_drive import DriveConfigurationError, match_drive_connection_intent
 from .provider_contracts import TranscriptionErrorClass
 from .provider_factory import build_transcriber
 from .settings import Settings
@@ -27,6 +30,7 @@ class BotReply:
     text: str
     pending_id: str | None = None
     remove_keyboard: bool = False
+    document: ExportDocument | None = None
 
 
 class Processor(Protocol):
@@ -509,6 +513,8 @@ def build_router(
     processor: Processor,
     settings: Settings,
     transcriber: Transcriber | None = None,
+    access: AccessService | None = None,
+    google_drive: Any | None = None,
     transcription_queue: DurableTranscriptionQueue | None = None,
 ) -> Router:
     router = Router(name="agro_notes")
@@ -526,6 +532,19 @@ def build_router(
                 await close()
 
     async def reply(message: Message, user_id: int, result: BotReply) -> bool:
+        if result.document is not None:
+            if not await authorize(message):
+                return False
+            try:
+                await message.answer_document(
+                    BufferedInputFile(result.document.content, filename=result.document.filename),
+                    caption=result.text,
+                )
+            except Exception as exc:
+                logger.error("Telegram export delivery failed (%s)", type(exc).__name__)
+                await message.answer("Não foi possível enviar a planilha. Tente novamente.")
+                return False
+            return True
         markup = None
         if result.pending_id:
             markup = InlineKeyboardMarkup(
@@ -556,10 +575,56 @@ def build_router(
         if message.chat.type != "private":
             await message.answer("Por segurança, use o chat privado do bot para acessar dados da fazenda.")
             return False
-        if not is_allowed(message.from_user.id if message.from_user else None, settings):
+        user_id = message.from_user.id if message.from_user else None
+        allowed = (
+            await access.is_authorized(user_id) if access and user_id is not None else is_allowed(user_id, settings)
+        )
+        if not allowed:
             await message.answer("Acesso não autorizado.")
             return False
         return True
+
+    async def connect_drive(message: Message, user_id: int) -> None:
+        if not google_drive or not google_drive.configured:
+            await message.answer("O Google Drive ainda não está configurado pelo administrador.")
+            return
+        try:
+            already_connected = await asyncio.to_thread(google_drive.is_connected, user_id)
+            if already_connected:
+                await message.answer("Seu Google Drive já está conectado.")
+                return
+            url = await asyncio.to_thread(google_drive.create_authorization_url, user_id)
+        except ValueError as exc:
+            if str(exc) == "Google Drive is already connected":
+                await message.answer("Seu Google Drive já está conectado.")
+                return
+            await message.answer("Não foi possível iniciar a conexão. Tente novamente.")
+            return
+        except DriveConfigurationError:
+            await message.answer("O Google Drive ainda não está configurado pelo administrador.")
+            return
+        await message.answer(f"Para conectar seu Google Drive, abra este link e autorize o Agro Notes.\n{url}")
+
+    async def disconnect_drive(message: Message, user_id: int) -> None:
+        if not google_drive:
+            await message.answer("Não há uma conexão Google Drive ativa.")
+            return
+        try:
+            disconnected = await asyncio.to_thread(google_drive.disconnect, user_id)
+        except Exception as exc:
+            logger.error("Google Drive disconnect failed (%s)", type(exc).__name__)
+            await message.answer("Não foi possível desconectar o Google Drive. Tente novamente.")
+            return
+        if disconnected:
+            await message.answer("Google Drive desconectado. A conexão não poderá mais ser usada pelo Agro Notes.")
+        else:
+            await message.answer("Não há uma conexão Google Drive ativa.")
+
+    def user_display(message: Message) -> tuple[str, str]:
+        user = message.from_user
+        if user is None:
+            return "", ""
+        return (" ".join(part for part in (user.first_name, user.last_name) if part), user.username or "")
 
     async def audit_voice_failure(
         message: Message, user_id: int, received_at: str, failure_code: str, response: str
@@ -579,16 +644,58 @@ def build_router(
 
     @router.message(CommandStart())
     async def start(message: Message) -> None:
-        if await authorize(message):
+        if message.chat.type != "private":
+            await message.answer("Por segurança, inicie o bot em uma conversa privada.")
+            return
+        if access and message.from_user:
+            display, username = user_display(message)
+            text = await access.start(message.from_user.id, display, username)
+            await message.answer(text)
+        elif await authorize(message):
             await message.answer(
                 "Envie um texto ou áudio com a movimentação da fazenda. "
                 "Vou pedir esclarecimentos quando faltarem dados; alguns registros são gravados após validação "
                 "e outros exigem sua confirmação."
             )
 
+    @router.message(Command("acesso", ignore_case=True))
+    async def access_code(message: Message) -> None:
+        if message.chat.type != "private":
+            await message.answer("Envie o código somente em conversa privada com o bot.")
+            return
+        if not access or not message.from_user:
+            await message.answer("O cadastro por código não está disponível.")
+            return
+        pieces = (message.text or "").split(maxsplit=1)
+        if len(pieces) != 2:
+            await message.answer("Uso: /acesso SEU_CODIGO (somente nesta conversa privada).")
+            return
+        display, username = user_display(message)
+        await message.answer(await access.redeem(message.from_user.id, pieces[1], display, username))
+
+    @router.message(Command("conectar_drive"))
+    async def connect_drive_command(message: Message) -> None:
+        if not await authorize(message):
+            return
+        assert message.from_user is not None
+        await connect_drive(message, message.from_user.id)
+
+    @router.message(Command("desconectar_drive"))
+    async def disconnect_drive_command(message: Message) -> None:
+        if not await authorize(message):
+            return
+        assert message.from_user is not None
+        await disconnect_drive(message, message.from_user.id)
+
     @router.message(F.voice)
     async def voice(message: Message, bot: Bot) -> None:
         nonlocal transcriber
+        if message.chat.type != "private":
+            await message.answer("Por segurança, use o chat privado do bot para acessar dados da fazenda.")
+            return
+        if access and message.from_user and not await access.is_authorized(message.from_user.id):
+            await message.answer("Para liberar o acesso, envie /start e depois /acesso SEU_CODIGO por texto.")
+            return
         if not await authorize(message):
             return
         assert message.from_user is not None
@@ -653,10 +760,41 @@ def build_router(
 
     @router.message(F.text)
     async def text(message: Message) -> None:
+        if message.chat.type != "private":
+            await message.answer("Por segurança, use o chat privado do bot para acessar dados da fazenda.")
+            return
+        raw_text = message.text or ""
+        if access and message.from_user:
+            stripped = raw_text.strip()
+            command, _, argument = stripped.partition(" ")
+            is_access_command = command.casefold().split("@", maxsplit=1)[0] == "/acesso"
+            is_plain_code = stripped.upper().startswith("AGRO-") and bool(normalize_code(stripped))
+            if is_access_command or is_plain_code:
+                if await access.is_authorized(message.from_user.id):
+                    await message.answer("Seu acesso já está ativo.")
+                else:
+                    display, username = user_display(message)
+                    code = argument.strip() if is_access_command else stripped
+                    await message.answer(await access.redeem(message.from_user.id, code, display, username))
+                return
+            if not await access.is_authorized(message.from_user.id):
+                if stripped.casefold() == "/cancel":
+                    await message.answer(await access.set_waiting(message.from_user.id))
+                else:
+                    display, username = user_display(message)
+                    await message.answer(await access.redeem(message.from_user.id, raw_text, display, username))
+                return
         if not await authorize(message):
             return
         assert message.from_user is not None and message.text is not None
         user_id = message.from_user.id
+        drive_action = match_drive_connection_intent(message.text)
+        if drive_action == "connect":
+            await connect_drive(message, user_id)
+            return
+        if drive_action == "disconnect":
+            await disconnect_drive(message, user_id)
+            return
         received_at = datetime.now(UTC).isoformat()
         async with lock_for(user_id):
             try:
@@ -683,13 +821,31 @@ def build_router(
     @router.callback_query()
     async def callback(query: CallbackQuery) -> None:
         user_id = query.from_user.id
-        if not is_allowed(user_id, settings):
+        allowed = await access.is_authorized(user_id) if access else is_allowed(user_id, settings)
+        if not allowed:
             await query.answer("Acesso não autorizado.", show_alert=True)
             return
         if not isinstance(query.message, Message) or query.message.chat.type != "private":
             await query.answer("Use o chat privado do bot para acessar dados da fazenda.", show_alert=True)
             return
         action, _, pending_id = (query.data or "").partition(":")
+        if action == "drive_connect":
+            if not google_drive:
+                await query.answer("Esta conexão expirou. Solicite um novo link.", show_alert=True)
+                return
+            try:
+                connected = await asyncio.to_thread(google_drive.confirm_connection, user_id, pending_id)
+            except Exception as exc:
+                logger.error("Google Drive confirmation failed (%s)", type(exc).__name__)
+                connected = False
+            if not connected:
+                await query.answer("Esta conexão expirou ou foi revogada. Solicite um novo link.", show_alert=True)
+                await query.message.edit_reply_markup(reply_markup=None)
+                return
+            await query.answer("Google Drive conectado.")
+            await query.message.edit_reply_markup(reply_markup=None)
+            await query.message.answer("Google Drive conectado com sucesso.")
+            return
         async with lock_for(user_id):
             if action not in {"confirm", "cancel"} or not pending_id or not isinstance(query.message, Message):
                 await query.answer("Esta confirmação expirou ou não pertence a você.", show_alert=True)
