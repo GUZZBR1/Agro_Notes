@@ -20,7 +20,9 @@ from .provider_contracts import (
 )
 from .settings import Settings
 
-STRICT_SCHEMA_MODELS = frozenset({"openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.8-27b"})
+# gpt-oss-20b rejects Groq's strict json_schema response_format; its JSON object
+# output is still parsed and validated against StrictInterpretationProposal below.
+STRICT_SCHEMA_MODELS = frozenset({"openai/gpt-oss-120b", "qwen/qwen3.8-27b"})
 
 
 class GroqInterpretationError(ValueError):
