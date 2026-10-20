@@ -49,3 +49,9 @@ Baseado em inspeção read-only do branch local e pesquisa primária do farmOS: 
 ## Revisão arquitetural
 
 O PRD e a especificação de aceitação foram aprovados pelo Architect (rodada 4) e pelo Critic adversarial (rodada 1), em 2026-10-20. Isso aprova o handoff arquitetural das etapas 1–2, sujeito aos gates de produto; não declara implementação concluída.
+
+## Extensão de importação de planilhas
+
+O usuário confirmou que a primeira versão deve importar cadastro e todos os sete tipos já suportados, inclusive parto com múltiplas crias e vacinação individual/grupal. A inspeção local confirmou que o bot recebe texto/voz, mas não importa documentos; `openpyxl` já está declarado para exportação XLSX. A revisão documental decidiu intake via Telegram e propôs destino na planilha Google oficial da propriedade, ainda sujeito a confirmação de produto.
+
+A revisão 4 do PRD/test-spec foi aprovada pelo Architect (rodada 4, com checagem dirigida rodada 5) e Critic adversarial (rodada 2), em 2026-10-20. O P1 da revisão adversarial anterior sobre snapshot durável e correções de vacina grupal foi fechado por abas append-only, proveniência/owner, publicação verificada e regras de correção que preservam a composição. A aprovação é para handoff, não implementação: importação permanece desligada até gates de produto, migração, testes I0 e homologação em cópia. Nenhum teste/código de importação foi executado/implementado nesta etapa.
