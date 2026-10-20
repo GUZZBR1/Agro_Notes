@@ -15,7 +15,7 @@ from typing import Any
 
 from openai import OpenAI
 
-from .groq_interpreter import STRICT_SCHEMA_MODELS, GroqInterpretationError, GroqInterpretationProvider
+from .groq_interpreter import GroqInterpretationError, GroqInterpretationProvider
 
 FIXTURE = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "provider-golden.json"
 EXTRA_FIXTURE = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "provider-evaluation-extra.json"
@@ -29,7 +29,8 @@ PRICE_CHECKED_ON = "2026-10-13"
 
 
 def select_candidate_models(active_ids: set[str], requested: list[str] | None = None) -> list[str]:
-    candidates = sorted(active_ids & PRODUCTION_STRICT_MODELS & STRICT_SCHEMA_MODELS)
+    # Candidate selection is independent of the response format used by the adapter.
+    candidates = sorted(active_ids & PRODUCTION_STRICT_MODELS)
     return [model for model in candidates if not requested or model in requested]
 
 
