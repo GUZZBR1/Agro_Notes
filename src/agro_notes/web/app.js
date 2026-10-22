@@ -348,6 +348,9 @@
       const [state, chat] = await Promise.all([api("/api/state"), api("/api/chat")]);
       $("#property-id").textContent = String(state.property_id || "Propriedade local");
       $("#actor-id").textContent = `Operador ${state.actor_id}`;
+      $("#local-note-copy").textContent = state.groq_enabled
+        ? "Groq interpreta as mensagens de texto. Fotos e áudios ficam na conversa, sem análise ou transcrição."
+        : "Configure GROQ_API_KEY para interpretar texto. Fotos e áudios são recebidos e exibidos sem análise ou transcrição.";
       renderMessages(chat.messages, true);
       setStatus("Conversa local pronta.");
     } catch (error) {

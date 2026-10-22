@@ -19,6 +19,8 @@ from .application import MVPProcessor
 from .local_cli import LocalSettings, _run_action
 from .local_interpreter import JsonProposalInterpreter
 from .local_store import LocalEventStore
+from .provider_factory import build_interpreter
+from .settings import Settings
 
 MAX_REQUEST_BYTES = 1_000_000
 MAX_CHAT_REQUEST_BYTES = 16_000_000
@@ -43,17 +45,38 @@ STATIC_FILES = {
 class LocalWebRuntime:
     """Own the in-memory session and one event loop for serialized HTTP calls."""
 
-    def __init__(self, property_id: str, actor_id: int, timezone: str) -> None:
+    def __init__(
+        self,
+        property_id: str,
+        actor_id: int,
+        timezone: str,
+        *,
+        groq_enabled: bool | None = None,
+    ) -> None:
         self.property_id = property_id
         self.actor_id = actor_id
         self.timezone = timezone
         self.store = LocalEventStore()
+        provider_settings = Settings()
+        configured_for_groq = provider_settings.ai_provider == "groq" and bool(provider_settings.groq_api_key.strip())
+        self.groq_enabled = configured_for_groq if groq_enabled is None else groq_enabled
+        if self.groq_enabled and not provider_settings.groq_api_key.strip():
+            raise ValueError("Groq está habilitado, mas GROQ_API_KEY não está configurada.")
+        if self.groq_enabled and provider_settings.ai_provider != "groq":
+            raise ValueError("Defina AI_PROVIDER=groq para habilitar a interpretação Groq no chat local.")
         self.settings = LocalSettings(
             farm_property_id=property_id,
             farm_timezone=timezone,
             allowed_user_ids=frozenset({actor_id}),
+            min_interpretation_confidence=provider_settings.min_interpretation_confidence,
+            interpretation_model=provider_settings.interpretation_model if self.groq_enabled else "explicit-json",
         )
-        self.processor = MVPProcessor(self.settings, self.store, JsonProposalInterpreter())
+        self.json_processor = MVPProcessor(self.settings, self.store, JsonProposalInterpreter())
+        self.processor = MVPProcessor(
+            self.settings,
+            self.store,
+            build_interpreter(provider_settings) if self.groq_enabled else JsonProposalInterpreter(),
+        )
         self.loop = asyncio.new_event_loop()
         self.sequence = 0
         self.chat_messages: list[dict[str, Any]] = []
@@ -83,6 +106,7 @@ class LocalWebRuntime:
             "property_id": self.property_id,
             "actor_id": self.actor_id,
             "timezone": self.timezone,
+            "groq_enabled": self.groq_enabled,
             "last_interaction": last_interaction,
             "store": self.store.snapshot(),
         }
@@ -108,7 +132,7 @@ class LocalWebRuntime:
                     )
                 )
         result = self.loop.run_until_complete(
-            _run_action(self.processor, self.store, self.actor_id, body, self.sequence, source="local-web")
+            _run_action(self.json_processor, self.store, self.actor_id, body, self.sequence, source="local-web")
         )
         response = {"ok": True, **result}
         operation = body.get("action")
@@ -124,7 +148,33 @@ class LocalWebRuntime:
             response["state"] = conversation.get("state")
         return response
 
+    def interpret_text(self, text: str, message_id: str) -> dict[str, Any]:
+        if not self.groq_enabled:
+            raise ValueError("A interpretação Groq não está habilitada nesta sessão local.")
+        reply = self.loop.run_until_complete(
+            self.processor.receive(
+                self.actor_id,
+                text,
+                source="local-web",
+                message_id=message_id,
+                captured_at=datetime.now(UTC).isoformat(),
+                device_timezone=self.timezone,
+                source_reference=None,
+            )
+        )
+        command_id = f"LOCAL:{self.actor_id}:{message_id}"
+        conversation = next(
+            (row for row in reversed(self.store.read_rows("18_Conversas")) if row.get("command_id") == command_id),
+            None,
+        )
+        response: dict[str, Any] = {"text": reply.text, "pending_id": reply.pending_id}
+        if conversation:
+            response["state"] = conversation.get("state")
+        return response
+
     def close(self) -> None:
+        if self.groq_enabled:
+            self.processor.interpreter.close()
         self.loop.close()
 
     def chat(self) -> dict[str, Any]:
@@ -185,19 +235,27 @@ class LocalWebRuntime:
                 }
             )
             answer = result.get("text", "Proposta processada.")
+        elif self.groq_enabled and text.strip():
+            result = self.interpret_text(text, message_id)
+            answer = result.get("text", "Texto processado pelo Groq.")
+        else:
+            answer = ""
+            if text.strip():
+                answer = (
+                    "Sua mensagem foi recebida, mas não foi interpretada: "
+                    "configure GROQ_API_KEY para ativar o Groq."
+                )
+
+        if result:
             if any(item["mime_type"].startswith("image/") for item in attachments):
                 answer += " A foto foi recebida e exibida, sem análise automática."
             if any(item["mime_type"] in ALLOWED_AUDIO_MIME_TYPES for item in attachments):
                 answer += " O áudio foi recebido e exibido, sem transcrição."
         else:
-            details = []
-            if text.strip():
-                details.append("Sua mensagem foi recebida, mas não foi interpretada no modo local.")
             if any(item["mime_type"].startswith("image/") for item in attachments):
-                details.append("A foto foi recebida e exibida, sem análise automática.")
+                answer += (" " if answer else "") + "A foto foi recebida e exibida, sem análise automática."
             if any(item["mime_type"] in ALLOWED_AUDIO_MIME_TYPES for item in attachments):
-                details.append("O áudio foi recebido e exibido, sem transcrição.")
-            answer = " ".join(details)
+                answer += (" " if answer else "") + "O áudio foi recebido e exibido, sem transcrição."
 
         extra: dict[str, Any] = {}
         if result:

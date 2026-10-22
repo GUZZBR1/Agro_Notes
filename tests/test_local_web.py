@@ -6,12 +6,15 @@ from threading import Thread
 
 import pytest
 
+import agro_notes.local_web as local_web
+from agro_notes.domain import EventProposal, InterpretationProposal
 from agro_notes.local_web import LocalWebRuntime, LocalWebServer
+from agro_notes.settings import Settings
 
 
 class ChatApi:
     def __init__(self):
-        self.runtime = LocalWebRuntime("farm", 7, "America/Sao_Paulo")
+        self.runtime = LocalWebRuntime("farm", 7, "America/Sao_Paulo", groq_enabled=False)
         self.server = LocalWebServer(("127.0.0.1", 0), self.runtime)
         self.thread = Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -45,7 +48,7 @@ def chat_api():
 
 
 def test_local_web_requires_preview_for_health_observation_and_confirms_once():
-    runtime = LocalWebRuntime("farm", 7, "America/Sao_Paulo")
+    runtime = LocalWebRuntime("farm", 7, "America/Sao_Paulo", groq_enabled=False)
     try:
         animal = runtime.action(
             {
@@ -98,7 +101,7 @@ def test_local_web_requires_preview_for_health_observation_and_confirms_once():
 
 
 def test_new_local_web_proposal_replaces_unresolved_clarification():
-    runtime = LocalWebRuntime("farm", 7, "America/Sao_Paulo")
+    runtime = LocalWebRuntime("farm", 7, "America/Sao_Paulo", groq_enabled=False)
     try:
         unclear = runtime.action(
             {
@@ -148,7 +151,7 @@ def test_new_local_web_proposal_replaces_unresolved_clarification():
 
 
 def test_local_web_cancel_does_not_write_pending_event():
-    runtime = LocalWebRuntime("farm", 7, "America/Sao_Paulo")
+    runtime = LocalWebRuntime("farm", 7, "America/Sao_Paulo", groq_enabled=False)
     try:
         preview = runtime.action(
             {
@@ -322,6 +325,45 @@ def test_chat_limits_total_session_attachment_memory(chat_api):
     )
     assert status == 400
     assert "50 MB" in response["error"]
+
+
+def test_groq_text_interpretation_creates_a_confirmation_preview(monkeypatch):
+    settings = Settings(_env_file=None, GROQ_API_KEY="test-key", AI_PROVIDER="groq")
+    submitted_text = []
+
+    class FakeInterpreter:
+        def interpret(self, text):
+            submitted_text.append(text)
+            return InterpretationProposal(
+                events=[
+                    EventProposal(
+                        event_type="ANIMAL_CREATED",
+                        payload={"display_identifier": "88", "species": "CATTLE"},
+                        time_expression="hoje",
+                        confidence=0.99,
+                    )
+                ]
+            )
+
+        def close(self):
+            pass
+
+    interpreter = FakeInterpreter()
+    monkeypatch.setattr(local_web, "Settings", lambda: settings)
+    monkeypatch.setattr(local_web, "build_interpreter", lambda _: interpreter)
+    runtime = LocalWebRuntime("farm", 7, "America/Sao_Paulo", groq_enabled=True)
+    try:
+        text = "Cadastre a vaca 88 da raça nelore"
+        response = runtime.chat_post({"text": text})
+        assistant = response["messages"][-1]
+
+        assert submitted_text == [text]
+        assert assistant["state"] == "WAITING_CONFIRMATION"
+        assert assistant["pending_id"]
+        assert runtime.state()["groq_enabled"] is True
+        assert runtime.state()["store"]["06_Eventos"] == []
+    finally:
+        runtime.close()
 
 
 def test_chat_post_returns_only_new_turn_while_get_keeps_full_history(chat_api):

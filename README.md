@@ -1,6 +1,6 @@
 # Agro Notes — runtime local de testes
 
-Esta branch remove o bot do Telegram e a integração com Google Drive para permitir exercitar o núcleo de registros pecuários localmente. A CLI usa propostas JSON explícitas, validação determinística e um armazenamento em memória. Ela não inicia serviços, não lê `.env` e não chama Telegram, Google Drive, Google Sheets ou provedores de IA.
+Esta branch remove o bot do Telegram e a integração com Google Drive para permitir exercitar o núcleo de registros pecuários localmente. A CLI usa propostas JSON explícitas, validação determinística e um armazenamento em memória; ela não lê `.env` nem chama provedores de IA. O chat web pode usar Groq para interpretar mensagens de texto quando `GROQ_API_KEY` está configurada, sem iniciar Telegram, Google Drive ou Google Sheets.
 
 ## Requisitos
 
@@ -15,7 +15,7 @@ Para abrir a interface visual local, execute:
 agro-notes-local-web --property-id FAZENDA-001 --actor-id 7
 ```
 
-Depois acesse <http://127.0.0.1:8765>. A tela principal é um chat para mensagens, fotos e áudios. A sessão mantém o histórico e os anexos somente na memória. São aceitos até 5 anexos por mensagem (4 MB cada, 10 MB combinados, 50 MB no total da sessão) e 200 mensagens por sessão; a gravação pelo navegador é limitada a 2 minutos e 4 MB. Neste modo local, texto livre não é interpretado, fotos não são analisadas e áudios não são transcritos; os anexos são recebidos e exibidos na conversa.
+Depois acesse <http://127.0.0.1:8765>. A tela principal é um chat para mensagens, fotos e áudios. Se o arquivo `.env` incluir `GROQ_API_KEY` com `AI_PROVIDER=groq`, mensagens de texto são interpretadas pelo Groq e passam pela validação determinística do Agro Notes antes de solicitar confirmação. Sem essa chave, texto livre não é interpretado. Fotos e áudios são recebidos e exibidos, sem análise ou transcrição. A sessão mantém o histórico e anexos somente na memória. São aceitos até 5 anexos por mensagem (4 MB cada, 10 MB combinados, 50 MB no total da sessão) e 200 mensagens por sessão; gravações do navegador são limitadas a 2 minutos e 4 MB.
 
 Para exercitar o registro dos sete tipos de evento, envie no chat uma proposta JSON no formato `{"events":[{"event_type":"ANIMAL_CREATED","payload":{"display_identifier":"42","species":"CATTLE"},"time_expression":"hoje","confidence":0.99}]}`. O Agro Notes apresenta a proposta para confirmação ou cancelamento antes de gravar. Cada execução mantém os dados somente na memória; eles desaparecem ao encerrar o processo (`Ctrl-C`). O servidor escuta apenas em `127.0.0.1` e não chama serviços externos.
 
@@ -63,4 +63,4 @@ O `actor-id` é uma identidade local escolhida explicitamente no comando. Os reg
 python -m pytest -q
 ```
 
-O armazenamento Google Sheets continua disponível como módulo legado isolado, mas a CLI local não o usa para conexão nem lê credenciais. Os comandos de avaliação de modelos são separados e podem enviar fixtures sintéticas a provedores quando executados explicitamente; a CLI local não os chama.
+O armazenamento Google Sheets continua disponível como módulo legado isolado, mas os runtimes locais não o usam. Os comandos de avaliação de modelos são separados e podem enviar fixtures sintéticas a provedores quando executados explicitamente; a CLI local não os chama.
