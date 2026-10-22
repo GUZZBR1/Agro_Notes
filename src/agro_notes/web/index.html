@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Agro Notes · conversa local</title>
+  <link rel="stylesheet" href="app.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#conversa" aria-label="Agro Notes, início">
+      <span class="brand-mark" aria-hidden="true">A</span>
+      <span>agro<span class="brand-light">notes</span></span>
+    </a>
+    <span class="local-badge"><span class="live-dot" aria-hidden="true"></span> Sessão local</span>
+  </header>
+  <main id="conversa">
+    <section class="chat-shell" aria-labelledby="chat-title">
+      <header class="chat-header">
+        <div class="avatar" aria-hidden="true">A</div>
+        <div class="chat-title-wrap">
+          <h1 id="chat-title">Agro Notes</h1>
+          <p><span id="property-id">Carregando propriedade…</span> <span aria-hidden="true">·</span> <span id="actor-id">operador</span></p>
+        </div>
+      </header>
+
+      <div class="local-note" role="note">
+        <strong>Modo de teste · memória temporária</strong>
+        <p>Mensagens, fotos e áudios ficam nesta sessão. Anexos e texto livre são recebidos, mas não analisados neste modo local.</p>
+      </div>
+
+      <div id="messages" class="messages" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Conversa com Agro Notes">
+        <article class="message assistant-message welcome-message">
+          <div class="message-avatar" aria-hidden="true">A</div>
+          <div class="bubble">
+            <p>Olá! Envie uma mensagem, uma foto ou um áudio para testar a conversa.</p>
+            <details class="test-guide">
+              <summary>Como testar um registro</summary>
+              <p>Envie uma proposta estruturada em JSON com a lista <code>events</code>. O sistema pedirá confirmação antes de gravar.</p>
+            </details>
+          </div>
+        </article>
+      </div>
+
+      <div id="attachment-preview" class="attachment-preview" hidden aria-label="Anexos prontos para enviar"></div>
+
+      <form id="composer" class="composer">
+        <label class="sr-only" for="message-input">Mensagem</label>
+        <textarea id="message-input" name="message" rows="1" placeholder="Escreva uma mensagem…" aria-describedby="composer-help" maxlength="10000"></textarea>
+        <div class="composer-bottom">
+          <div class="composer-tools">
+            <button class="icon-button" id="photo-button" type="button" aria-label="Anexar fotos" title="Anexar fotos"><span aria-hidden="true">▧</span><span class="tool-label">Foto</span></button>
+            <input id="photo-input" class="sr-only" type="file" accept="image/*" multiple>
+            <button class="icon-button" id="audio-button" type="button" aria-label="Anexar áudio" title="Anexar áudio"><span aria-hidden="true">♫</span><span class="tool-label">Áudio</span></button>
+            <input id="audio-input" class="sr-only" type="file" accept="audio/*">
+            <button class="icon-button record-button" id="record-button" type="button" aria-label="Gravar áudio" title="Gravar áudio"><span aria-hidden="true">●</span><span class="tool-label">Gravar</span></button>
+            <button class="icon-button stop-button" id="stop-recording-button" type="button" aria-label="Parar gravação" title="Parar gravação" hidden><span aria-hidden="true">■</span><span class="tool-label">Parar</span></button>
+            <span id="recording-label" class="recording-label" hidden>Gravando áudio…</span>
+          </div>
+          <button class="send-button" id="send-button" type="submit"><span>Enviar</span><span aria-hidden="true">↑</span></button>
+        </div>
+        <p id="composer-help" class="composer-help">Até 5 anexos, 4 MB cada (10 MB no total). Fotos e áudios são exibidos sem análise automática.</p>
+      </form>
+      <div id="status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+    </section>
+    <p class="privacy-note">Os dados desta conversa desaparecem quando o servidor local é encerrado.</p>
+  </main>
+</body>
+</html>

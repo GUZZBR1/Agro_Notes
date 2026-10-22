@@ -9,6 +9,24 @@ Esta branch remove o bot do Telegram e a integração com Google Drive para perm
 
 ## Executar
 
+Para abrir a interface visual local, execute:
+
+```sh
+agro-notes-local-web --property-id FAZENDA-001 --actor-id 7
+```
+
+Depois acesse <http://127.0.0.1:8765>. A tela principal é um chat para mensagens, fotos e áudios. A sessão mantém o histórico e os anexos somente na memória. São aceitos até 5 anexos por mensagem (4 MB cada, 10 MB combinados, 50 MB no total da sessão) e 200 mensagens por sessão; a gravação pelo navegador é limitada a 2 minutos e 4 MB. Neste modo local, texto livre não é interpretado, fotos não são analisadas e áudios não são transcritos; os anexos são recebidos e exibidos na conversa.
+
+Para exercitar o registro dos sete tipos de evento, envie no chat uma proposta JSON no formato `{"events":[{"event_type":"ANIMAL_CREATED","payload":{"display_identifier":"42","species":"CATTLE"},"time_expression":"hoje","confidence":0.99}]}`. O Agro Notes apresenta a proposta para confirmação ou cancelamento antes de gravar. Cada execução mantém os dados somente na memória; eles desaparecem ao encerrar o processo (`Ctrl-C`). O servidor escuta apenas em `127.0.0.1` e não chama serviços externos.
+
+Também é possível iniciar a interface sem instalar o pacote:
+
+```sh
+PYTHONPATH=src python -m agro_notes.local_web --property-id FAZENDA-001 --actor-id 7
+```
+
+### CLI JSON Lines
+
 ```sh
 agro-notes-local --property-id FAZENDA-001 --actor-id 7
 ```

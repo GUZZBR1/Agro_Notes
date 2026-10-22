@@ -23,6 +23,7 @@ agro-notes-evaluate-groq = "agro_notes.evaluate_models:main"
 agro-notes-evaluate-stt = "agro_notes.evaluate_transcription_models:main"
 agro-notes-field-eval = "agro_notes.field_eval:main"
 agro-notes-local = "agro_notes.local_cli:main"
+agro-notes-local-web = "agro_notes.local_web:main"
 
 [project.optional-dependencies]
 dev = [
@@ -34,6 +35,9 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+agro_notes = ["web/*"]
 
 [tool.setuptools.data-files]
 "share/agro-notes/eval" = ["eval/field_eval_v1.jsonl", "eval/field_golden_core.jsonl"]

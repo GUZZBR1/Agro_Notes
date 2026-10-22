@@ -225,6 +225,9 @@ class MVPProcessor:
                     inferred_captured_at=clarification_context["original_captured_at"],
                 )
                 result = self.validator.validate(proposal, trusted)
+                if source.casefold() == "local-web" and result.status == ValidationStatus.READY:
+                    result.status = ValidationStatus.NEEDS_CONFIRMATION
+                    result.requires_preview = True
                 if (
                     (clarification_context["voice_involved"] or source.casefold() == "local-json")
                     and result.status == ValidationStatus.READY

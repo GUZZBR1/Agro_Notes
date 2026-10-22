@@ -43,7 +43,15 @@ def _json_value(value: Any) -> Any:
     return value
 
 
-async def _run_action(processor: MVPProcessor, store: LocalEventStore, actor_id: int, action: dict[str, Any], seq: int):
+async def _run_action(
+    processor: MVPProcessor,
+    store: LocalEventStore,
+    actor_id: int,
+    action: dict[str, Any],
+    seq: int,
+    *,
+    source: str = "local-json",
+):
     operation = action.get("action")
     if operation == "record":
         proposal = action.get("proposal")
@@ -53,7 +61,7 @@ async def _run_action(processor: MVPProcessor, store: LocalEventStore, actor_id:
         reply = await processor.receive(
             actor_id,
             json.dumps(proposal, ensure_ascii=False),
-            source="local-json",
+            source=source,
             message_id=str(action.get("message_id") or seq),
             captured_at=captured_at,
             device_timezone=None,
