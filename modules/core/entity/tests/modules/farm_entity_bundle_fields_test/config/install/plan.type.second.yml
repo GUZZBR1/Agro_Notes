@@ -1,0 +1,11 @@
+langcode: en
+status: true
+dependencies:
+  enforced:
+    module:
+      - farm_entity_bundle_fields_test
+id: second
+label: Second
+description: ''
+workflow: plan_default
+new_revision: true

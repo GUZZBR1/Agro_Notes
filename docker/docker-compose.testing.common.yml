@@ -1,0 +1,15 @@
+services:
+  www:
+    image: farmos/farmos:4.x-dev
+    volumes:
+      - './www:/opt/drupal'
+    environment:
+      FARMOS_FS_READY_SENTINEL_FILENAME: /opt/drupal/www-container-fs-ready
+      SIMPLETEST_DB: $DB_URL
+      XDEBUG_MODE: 'off'
+
+  selenium:
+    image: selenium/standalone-chrome
+    # Increase shared memory size.
+    # See https://stackoverflow.com/questions/56218242/headless-chromium-on-docker-fails
+    shm_size: 2gb

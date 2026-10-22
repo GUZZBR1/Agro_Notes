@@ -1,0 +1,106 @@
+langcode: pt-br
+display:
+  default:
+    display_options:
+      title: Atividades
+      fields:
+        log_bulk_form:
+          action_title: Ação
+        status:
+          label: Situação
+        timestamp:
+          label: Data e hora
+        name:
+          label: Atividade
+        type:
+          label: Tipo de atividade
+        asset_target_id:
+          label: Registros
+        location_target_id:
+          label: Área
+        quantity:
+          label: Quantidade
+        flag_value:
+          label: Marcadores
+        category_target_id:
+          label: Categoria
+        owner_target_id:
+          label: Responsável
+      pager:
+        options:
+          expose:
+            items_per_page_label: Itens por página
+            items_per_page_options_all_label: '- Todas -'
+            offset_label: Deslocamento
+      exposed_form:
+        options:
+          submit_button: Filtrar
+          reset_button_label: Limpar
+          exposed_sorts_label: Ordenar por
+          sort_asc_label: Crescente
+          sort_desc_label: Decrescente
+      empty:
+        area_text_custom:
+          content: Nenhuma atividade encontrada.
+      footer:
+        result:
+          content: Exibindo @start - @end de @total
+      filters:
+        name:
+          expose:
+            label: Nome da atividade
+        notes__value:
+          expose:
+            label: Observações
+        type:
+          expose:
+            label: Tipo de atividade
+        category_target_id:
+          expose:
+            label: Categoria
+        flag_value:
+          expose:
+            label: Marcadores
+        timestamp:
+          expose:
+            label: Data inicial
+        timestamp_1:
+          expose:
+            label: Data final
+        is_movement:
+          expose:
+            label: É uma movimentação
+        status:
+          expose:
+            label: Situação
+        owner_target_id:
+          expose:
+            label: Responsável
+        asset_target_id:
+          expose:
+            label: Registros
+        location_target_id:
+          expose:
+            label: Área
+  page:
+    display_options:
+      title: Atividades
+      menu:
+        title: Atividades
+  block_late:
+    display_options:
+      title: Tarefas atrasadas
+    display_title: Tarefas atrasadas
+  block_upcoming:
+    display_options:
+      title: Próximas tarefas
+    display_title: Próximas tarefas
+  page_type:
+    display_options:
+      title: Atividades
+      menu:
+        title: Atividades
+  page_user:
+    display_options:
+      title: Atividades atribuídas
+    display_title: Atividades atribuídas

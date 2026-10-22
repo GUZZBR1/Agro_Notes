@@ -1,0 +1,67 @@
+langcode: pt-br
+display:
+  default:
+    display_options:
+      title: Registros
+      fields:
+        asset_bulk_form:
+          action_title: Ação
+        name:
+          label: Nome
+        type:
+          label: Tipo de registro
+        location:
+          label: Área
+        archived:
+          label: Arquivado
+        parent_target_id:
+          label: Registro principal
+      pager:
+        options:
+          expose:
+            items_per_page_label: Itens por página
+            items_per_page_options_all_label: '- Todas -'
+            offset_label: Deslocamento
+      exposed_form:
+        options:
+          submit_button: Filtrar
+          reset_button_label: Limpar
+          exposed_sorts_label: Ordenar por
+          sort_asc_label: Crescente
+          sort_desc_label: Decrescente
+      empty:
+        area_text_custom:
+          content: Nenhum registro encontrado.
+      filters:
+        name:
+          expose:
+            label: Nome
+        type:
+          expose:
+            label: Tipo de registro
+        flag_value:
+          expose:
+            label: Marcadores
+        is_location:
+          expose:
+            label: É uma área
+        is_fixed:
+          expose:
+            label: É fixo
+        owner_target_id:
+          expose:
+            label: Responsável
+        archived:
+          expose:
+            label: Arquivado
+  page:
+    display_options:
+      title: Registros
+      menu:
+        title: Registros
+  page_type:
+    display_options:
+      title: Registros
+  page_location:
+    display_options:
+      title: Registros por área

@@ -1,0 +1,7 @@
+farm_role:
+  default_permissions:
+    - access content
+    - access user profiles
+    - change own username
+  manager_permissions:
+    - access taxonomy overview

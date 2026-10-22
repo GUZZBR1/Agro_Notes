@@ -1,0 +1,7 @@
+name: farmOS Role
+description: Provides a framework for managed roles and permissions.
+type: module
+package: farmOS
+core_version_requirement: ^11
+dependencies:
+  - drupal:user

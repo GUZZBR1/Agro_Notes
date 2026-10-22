@@ -1,0 +1,9 @@
+langcode: en
+status: true
+dependencies:
+  enforced:
+    module:
+      - farm_flag
+id: priority
+label: Priority
+entity_types: null

@@ -1,0 +1,22 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Drupal\farm_ui_views\Plugin\Derivative;
+
+/**
+ * Provides menu links for farmOS Asset Views.
+ */
+class FarmAssetViewsMenuLink extends FarmViewsMenuLink {
+
+  /**
+   * {@inheritdoc}
+   */
+  protected string $entityType = 'asset';
+
+  /**
+   * {@inheritdoc}
+   */
+  protected string $viewId = 'farm_asset';
+
+}

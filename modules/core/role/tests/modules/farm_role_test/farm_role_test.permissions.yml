@@ -1,0 +1,4 @@
+standard role permission:
+  title: 'A standard role permission'
+  description: 'A permission to be added to roles in a standard way for testing'
+  restrict access: true

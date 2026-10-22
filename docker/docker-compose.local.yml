@@ -1,0 +1,50 @@
+services:
+  db:
+    image: postgres:17
+    volumes:
+      - './local/db:/var/lib/postgresql/data'
+    environment:
+      POSTGRES_USER: farm
+      POSTGRES_PASSWORD: farm
+      POSTGRES_DB: farm
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U farm -d farm']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  www:
+    image: farmos/farmos:4.x-dev
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - './local/www:/opt/drupal'
+      - '..:/opt/farm-profile:ro'
+      - './local-entrypoint.sh:/usr/local/bin/farmos-local-entrypoint.sh:ro'
+      - './local-no-login.conf:/etc/apache2/conf-enabled/farmos-local-no-login.conf:ro'
+    ports:
+      - '127.0.0.1:${FARMOS_LOCAL_PORT:-80}:80'
+    entrypoint: ['/bin/sh', '/usr/local/bin/farmos-local-entrypoint.sh']
+    command: ['apache2-foreground']
+    environment:
+      FARMOS_FS_READY_SENTINEL_FILENAME: /opt/drupal/.farmos-ready
+
+  install:
+    image: farmos/farmos:4.x-dev
+    depends_on:
+      db:
+        condition: service_healthy
+      www:
+        condition: service_started
+    volumes:
+      - './local/www:/opt/drupal'
+      - '..:/opt/farm-profile:ro'
+      - './local-install.sh:/usr/local/bin/farmos-local-install.sh:ro'
+    entrypoint: ['/bin/sh', '/usr/local/bin/farmos-local-install.sh']
+    environment:
+      FARMOS_DB_URL: 'pgsql://farm:farm@db/farm'
+      FARMOS_ADMIN_NAME: '${FARMOS_ADMIN_NAME:-admin}'
+      FARMOS_SITE_NAME: '${FARMOS_SITE_NAME:-farmOS Local}'
+      FARMOS_FS_READY_SENTINEL_FILENAME: /opt/drupal/.farmos-ready
+    restart: 'no'

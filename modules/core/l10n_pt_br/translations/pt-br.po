@@ -1,0 +1,175 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: farmOS\n"
+"POT-Creation-Date: 2026-10-22 00:00+0000\n"
+"PO-Revision-Date: 2026-10-22 00:00+0000\n"
+"Language: pt_BR\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+
+msgid "Logs"
+msgstr "Atividades"
+
+msgid "Log"
+msgstr "Atividade"
+
+msgid "Tasks"
+msgstr "Tarefas"
+
+msgid "Task"
+msgstr "Tarefa"
+
+msgid "Late tasks"
+msgstr "Tarefas atrasadas"
+
+msgid "Upcoming tasks"
+msgstr "Próximas tarefas"
+
+msgid "Assets"
+msgstr "Registros"
+
+msgid "Asset"
+msgstr "Registro"
+
+msgid "Land assets"
+msgstr "Áreas"
+
+msgid "Group assets"
+msgstr "Grupos de animais"
+
+msgid "Animal assets"
+msgstr "Animais"
+
+msgid "Locations"
+msgstr "Áreas"
+
+msgid "Records"
+msgstr "Registros"
+
+msgid "Location"
+msgstr "Área"
+
+msgid "Apply"
+msgstr "Filtrar"
+
+msgid "Reset"
+msgstr "Limpar"
+
+msgid "Sort by"
+msgstr "Ordenar por"
+
+msgid "Items per page"
+msgstr "Itens por página"
+
+msgid "- All -"
+msgstr "- Todas -"
+
+msgid "No assets found."
+msgstr "Nenhum registro encontrado."
+
+msgid "No logs found."
+msgstr "Nenhuma atividade encontrada."
+
+msgid "Add Log"
+msgstr "Adicionar atividade"
+
+msgid "Add Asset"
+msgstr "Adicionar registro"
+
+msgid "Add Land"
+msgstr "Adicionar área"
+
+msgid "Add @bundle @entity_type"
+msgstr "Adicionar @entity_type: @bundle"
+
+msgid "Add group"
+msgstr "Adicionar grupo de animais"
+
+msgid "Name"
+msgstr "Nome"
+
+msgid "Status"
+msgstr "Situação"
+
+msgid "Owner"
+msgstr "Responsável"
+
+msgid "Archived"
+msgstr "Arquivado"
+
+msgid "Type"
+msgstr "Tipo"
+
+msgid "Filter"
+msgstr "Filtrar"
+
+msgid "Search"
+msgstr "Buscar"
+
+msgid "Create new"
+msgstr "Criar novo"
+
+msgid "No results found."
+msgstr "Nenhum resultado encontrado."
+
+msgid "Done"
+msgstr "Concluída"
+
+msgid "Pending"
+msgstr "Pendente"
+
+msgid "Abandoned"
+msgstr "Abandonada"
+
+msgid "Timestamp"
+msgstr "Data e hora"
+
+msgid "Log name"
+msgstr "Nome da atividade"
+
+msgid "Log type"
+msgstr "Tipo de atividade"
+
+msgid "Log category"
+msgstr "Categoria da atividade"
+
+msgid "Is movement"
+msgstr "É uma movimentação"
+
+msgid "Asset type"
+msgstr "Tipo de registro"
+
+msgid "Is location"
+msgstr "É uma área"
+
+msgid "Is fixed"
+msgstr "É fixo"
+
+msgid "Toggle drag and drop"
+msgstr "Ativar ou desativar arrastar e soltar"
+
+msgid "All locations"
+msgstr "Todas as áreas"
+
+msgid "Locations can be organized into a hierarchy with parent relationships."
+msgstr "As áreas podem ser organizadas em uma hierarquia, com relações entre áreas principais e subordinadas."
+
+msgid "To change the hierarchy, either click on individual assets and edit their parent, or click %toggle_button below to enable drag and drop editing on this page. The %save_button button will save changes, and %reset_button will reset them."
+msgstr "Para alterar a hierarquia, edite a área principal de cada registro ou use %toggle_button para reorganizar os itens nesta página. Clique em %save_button para salvar as alterações ou em %reset_button para descartá-las."
+
+msgid "Assets represent things that are being tracked or managed. They store high-level information, but most historical data is stored in the <a href=\":logs\">logs</a> that reference them."
+msgstr "Registros representam itens acompanhados ou gerenciados. Eles guardam informações gerais, enquanto a maior parte do histórico fica nas <a href=\":logs\">atividades</a> relacionadas."
+
+msgid "Assets that are no longer actively managed can be archived. Archived assets will be hidden from most lists, but are preserved and searchable for posterity."
+msgstr "Registros que deixaram de ser acompanhados podem ser arquivados. Eles ficam ocultos na maioria das listas, mas continuam disponíveis para consulta."
+
+msgid "Logs represent events that take place in relation to <a href=\":assets\">assets</a> and other records. They have a timestamp to represent when they take place, and a status to designate that they are \"Done\", \"Pending\", or \"Abandoned\"."
+msgstr "Atividades registram eventos relacionados a <a href=\":assets\">registros</a> e a outros itens. A data e a situação indicam quando ocorreram e se estão concluídas, pendentes ou abandonadas."
+
+msgid "Logs can be assigned to <a href=\":people\">people</a> for task management purposes."
+msgstr "Atividades podem ser atribuídas a <a href=\":people\">pessoas</a> para acompanhamento de tarefas."
+
+msgid "Locations represent places of interest. They are assets, and assets can be moved to them. Logs can reference them."
+msgstr "Áreas representam locais importantes da fazenda. São registros para os quais outros itens podem ser movidos e que podem ser associados a atividades."

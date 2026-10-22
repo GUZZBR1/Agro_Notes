@@ -1,59 +1,80 @@
-# Agro Notes
+# farmOS
 
-MVP de captura de eventos de manejo animal por Telegram, com interpretação estruturada, validação determinística, confirmação e armazenamento append-only no Google Sheets.
+[![Licence](https://img.shields.io/badge/Licence-GPL%202.0-blue.svg)](https://opensource.org/licenses/GPL-2.0/)
+[![Release](https://img.shields.io/github/release/farmOS/farmOS.svg?style=flat)](https://github.com/farmOS/farmOS/releases)
+[![Last commit](https://img.shields.io/github/last-commit/farmOS/farmOS.svg?style=flat)](https://github.com/farmOS/farmOS/commits)
+[![Docker](https://img.shields.io/docker/pulls/farmos/farmos.svg)](https://hub.docker.com/r/farmos/farmos/)
+[![Chat](https://img.shields.io/matrix/farmOS:matrix.org.svg)](https://app.element.io/#/room/#farmOS:matrix.org)
+[![Backers on Open Collective](https://opencollective.com/farmOS/backers/badge.svg)](#backers)
+[![Sponsors on Open Collective](https://opencollective.com/farmOS/sponsors/badge.svg)](#sponsors)
+[![DPG Badge](https://img.shields.io/badge/Verified-DPG%20(Since%20%202022)-3333AB?logo=data:image/svg%2bxml;base64,PHN2ZyB3aWR0aD0iMzEiIGhlaWdodD0iMzMiIHZpZXdCb3g9IjAgMCAzMSAzMyIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTE0LjIwMDggMjEuMzY3OEwxMC4xNzM2IDE4LjAxMjRMMTEuNTIxOSAxNi40MDAzTDEzLjk5MjggMTguNDU5TDE5LjYyNjkgMTIuMjExMUwyMS4xOTA5IDEzLjYxNkwxNC4yMDA4IDIxLjM2NzhaTTI0LjYyNDEgOS4zNTEyN0wyNC44MDcxIDMuMDcyOTdMMTguODgxIDUuMTg2NjJMMTUuMzMxNCAtMi4zMzA4MmUtMDVMMTEuNzgyMSA1LjE4NjYyTDUuODU2MDEgMy4wNzI5N0w2LjAzOTA2IDkuMzUxMjdMMCAxMS4xMTc3TDMuODQ1MjEgMTYuMDg5NUwwIDIxLjA2MTJMNi4wMzkwNiAyMi44Mjc3TDUuODU2MDEgMjkuMTA2TDExLjc4MjEgMjYuOTkyM0wxNS4zMzE0IDMyLjE3OUwxOC44ODEgMjYuOTkyM0wyNC44MDcxIDI5LjEwNkwyNC42MjQxIDIyLjgyNzdMMzAuNjYzMSAyMS4wNjEyTDI2LjgxNzYgMTYuMDg5NUwzMC42NjMxIDExLjExNzdMMjQuNjI0MSA5LjM1MTI3WiIgZmlsbD0id2hpdGUiLz4KPC9zdmc+Cg==)](https://digitalpublicgoods.net/r/farmOS)
 
-## Requisitos
+farmOS is a web-based application for farm management, planning, and record
+keeping. It is developed by a community of volunteers and aims to provide a
+standard platform for farmers, developers, and researchers to build upon.
 
-- Python 3.11 ou superior
-- Token de bot Telegram e códigos de convite para cadastro
-- Chave Groq (provider inicial) ou OpenAI
-- Planilha Google compartilhada com o e-mail da service account
-- JSON de credenciais da service account salvo localmente
+Official website: [farmOS.org](https://farmOS.org)
 
-## Configuração
+## GETTING STARTED
 
-1. Crie e ative um ambiente virtual; instale `pip install -e .`. Para desenvolvimento, use `pip install -e '.[dev]'`.
-2. Copie `.env.example` para `.env` e preencha os segredos e `GOOGLE_SHEET_ID`. `TELEGRAM_ALLOWED_USER_IDS` é opcional e serve somente para migrar usuários antigos no primeiro acesso; convites novos são administrados pelo comando abaixo. Groq é o provider inicial para interpretação e transcrição; defina `INTERPRETATION_PROVIDER` e `TRANSCRIPTION_PROVIDER` independentemente como `groq` ou `openai` para selecionar cada integração. Os nomes anteriores `AI_PROVIDER`, `FARM_PROPERTY_ID`, `FARM_TIMEZONE`, `GOOGLE_CREDENTIALS_FILE` e `GROQ_MODEL` continuam aceitos como aliases. Os modelos Groq são configuráveis.
-3. Coloque o JSON de service account no caminho de `GOOGLE_CREDENTIALS_FILE`; compartilhe a planilha com o e-mail `client_email` do JSON, com permissão de editor.
-4. Inicie com `uvicorn agro_notes.main:app --host 0.0.0.0 --port 8000 --workers 1 --no-access-log`. A inicialização cria abas vazias e cabeçalhos ausentes; ela para se encontrar cabeçalhos incompatíveis.
-5. Garanta saída HTTPS para Telegram, Google APIs e o provider de IA escolhido. Long polling não exige webhook público; o processo precisa permanecer ativo.
+If you would like to install and host farmOS yourself, see the official
+documentation on farmOS.org: https://farmOS.org/hosting/install
 
-O bot deve ter **um único worker**: o Google Sheets não oferece transação nem restrição única para os registros do MVP. O acesso por convite usa bloqueio de arquivo compartilhado; execute o bot e o CLI administrativo no mesmo host, com o mesmo usuário do sistema e diretório temporário. O cliente Sheets serializa chamadas ao transporte HTTP. `GET /health` retorna `503` se o polling do Telegram estiver parado. O endpoint não valida a saúde posterior da planilha ou do provider de IA.
+If you would like to pay for hosting, [Farmier](https://farmier.com) provides
+affordable options for individual farms and organizations.
 
-## Fluxo
+## MAINTAINERS
 
-No primeiro contato privado, envie `/start` e depois `/acesso SEU_CODIGO`. O código é consumido uma vez (ou até o limite configurado), e a autorização fica vinculada ao ID numérico do Telegram. Códigos, resgates, tentativas e revogações ficam na aba `Telegram_Access`; somente o hash SHA-256 do convite é armazenado. Gere um convite com `python -m agro_notes.access_admin create-code --expires-in-hours 72 --max-uses 1`; o código é exibido uma única vez. O comando requer credenciais de serviço Google e acesso de escrita à planilha. Guarde o `ID para revogação` exibido para uso em `python -m agro_notes.access_admin revoke-code <ID>`. Revogue uma pessoa com `python -m agro_notes.access_admin revoke-user <TELEGRAM_USER_ID>`. Compartilhe o convite apenas em canal privado.
+Current maintainers:
+ * Michael Stenta (m.stenta) - https://drupal.org/user/581414
 
-Execute `revoke-code` na mesma máquina e ambiente de arquivos do bot, com o bot parado. Um bloqueio local SQLite impede que esse comando rode enquanto a instância do bot estiver ativa; uma implantação em outra máquina precisa primeiro parar o bot nela antes de executar a revogação.
+This project has been sponsored by:
 
-Envie texto ou áudio em português no chat privado do bot. Chats de grupo são recusados para evitar expor dados da fazenda a participantes que não estão na whitelist. O bot pede esclarecimentos quando faltam campos; eventos elegíveis são gravados após validação, e os que exigem confirmação mostram uma prévia antes da gravação. Pesagens recebidas por voz sempre exigem confirmação explícita após a prévia, pois o provider STT não fornece uma confiança calibrada para validar números reconhecidos. `/historico <identificador>` consulta os eventos recentes. `/cancel` descarta a última solicitação pendente. Antes de transcrever, o bot persiste na planilha o comando e a referência `file_id` do Telegram; os bytes continuam no armazenamento do Telegram e não são copiados para a planilha nem para logs. Isso permite retomar retries depois de uma reinicialização enquanto o Telegram mantiver o arquivo acessível. Falhas de download/transcrição ficam auditadas com a referência do áudio. Configure acesso e retenção da planilha de acordo com esses metadados.
+ * [Farmier](http://farmier.com)
+ * [Cornell University](http://www.cornell.edu)
+ * [Vermont Agency of Agriculture Food & Markets](http://agriculture.vermont.gov)
+ * [Vermont Housing & Conservation Board](http://www.vhcb.org)
+ * [UVM Extension](https://www.uvm.edu/extension)
+ * [Globetrotter Foundation](http://globetrotterfoundation.org)
+ * [Vermont Vegetable and Berry Growers Association](http://www.uvm.edu/vtvegandberry)
+ * [Pennsylvania Association for Sustainable Agriculture](https://pasafarming.org)
+ * [Natural Resources Conservation Service](https://www.nrcs.usda.gov)
+ * [The United States Forest Service - International Programs](https://www.fs.fed.us/about-agency/international-programs)
+ * [The National Forestry Authority of Uganda](https://www.nfa.org.ug/)
+ * [Our Sci](http://our-sci.net)
+ * [Bionutrient Food Association](https://bionutrient.org)
+ * [Foundation for Food and Agriculture Research](https://foundationfar.org/)
+ * [PVAMU College of Agriculture and Human Sciences](https://www.pvamu.edu/cahs/)
+ * [Rothamsted Research](https://www.rothamsted.ac.uk/)
+ * [OpenTEAM](https://openteam.community)
+ * [Wolfe's Neck Center for Agriculture and the Environment](https://www.wolfesneck.org)
+ * [Rooted Solutions](https://www.rootedsolutions.io/)
+ * [Cal Poly Initiative for Climate Leadership and Resilience](https://climate.calpoly.edu/)
+ * [Upper Salinas-Las Tablas Resource Conservation District](https://www.us-ltrcd.org/)
+ * [Point Blue Conservation Science](https://www.pointblue.org/)
 
-Retries de transcrição usam `GROQ_MAX_RETRIES=3`, `GROQ_RETRY_BASE_SECONDS=5` e `GROQ_RETRY_MAX_SECONDS=60`. Cotas diárias ficam bloqueadas até o reset indicado pela Groq; sem esse dado, o bot tenta novamente após `GROQ_DAILY_QUOTA_RETRY_SECONDS` (6 horas por padrão). O processo mantém uma única instância do bot, como exige a fila baseada no histórico append-only do Google Sheets.
+## CONTRIBUTORS
 
-Expressões `hoje`, `ontem` e `amanhã` usam o fuso de `FARM_TIMEZONE`. Se a fala não trouxer data, cadastro, entrada, parto, transferência, vacinação e observação recebem o dia local da propriedade no momento da captura; pesagens exigem data explícita. Expressões de data que o sistema não reconhece pedem esclarecimento.
+This project exists thanks to all the people who contribute.
+<a href="https://github.com/farmOS/farmOS/graphs/contributors"><img src="https://opencollective.com/farmOS/contributors.svg?width=890&button=false" /></a>
 
-Para conectar o Drive pessoal e salvar uma exportação XLSX, configure as credenciais OAuth seguindo [docs/GOOGLE_DRIVE_OAUTH_SETUP.md](docs/GOOGLE_DRIVE_OAUTH_SETUP.md). A planilha Google do Agro Notes continua sendo a fonte de verdade; o Drive pessoal recebe somente exportações.
+## OPENCOLLECTIVE BACKERS
 
-Escopo: nascimento/cadastro, entrada, parto, pesagem, transferência de lote, vacinação reportada (para um animal ou lote identificado) e observação de saúde reportada. Correções simples mostram o evento e valor anterior na prévia e só gravam após confirmação. O histórico individual considera a alocação do animal no lote na data do evento. O sistema não diagnostica nem executa protocolos veterinários.
+Thank you to all our OpenCollective backers! [[Become a backer](https://opencollective.com/farmOS#backer)]
 
-## Métricas
+<a href="https://opencollective.com/farmOS#backers" target="_blank"><img src="https://opencollective.com/farmOS/backers.svg?width=890"></a>
 
-Com a planilha configurada, execute `agro-notes-metrics` para gerar um snapshot JSON de esclarecimentos, correções, duplicações, efeitos parciais/revertidos, consultas ao histórico e tempo até gravação. Acurácia de intenção, slots, resolução de animal e utilidade de esclarecimento ficam `null` até haver anotações humanas do golden set; os números são descritivos e não definem gates arbitrários.
+## OPENCOLLECTIVE SPONSORS
 
-Para comparar os modelos de interpretação de produção `openai/gpt-oss-20b` e `openai/gpt-oss-120b` realmente ativos na conta Groq, configure `GROQ_API_KEY` e execute `agro-notes-evaluate-groq`. O relatório usa o golden set sintético e inclui acerto, schema, erros, retry, latência e custo estimado com a tabela de preços Groq consultada em 2026-10-13. Modelos preview não entram na seleção automática. Se somente um estiver ativo, o relatório indica `SINGLE_MODEL_AVAILABLE`. Sem chave, não há chamada externa. O caso de duplicidade fica a cargo da suíte de integração local, pois idempotência pertence ao app e não ao modelo.
+Support this project by becoming an OpenCollective sponsor. [[Become a sponsor](https://opencollective.com/farmOS#sponsor)]
 
-Para comparar `whisper-large-v3-turbo` e `whisper-large-v3` em áudio próprio, copie [o exemplo de manifesto](docs/stt-evaluation-manifest.example.json), substitua os caminhos por áudios PT-BR locais e confira as transcrições de referência; execute `agro-notes-evaluate-stt caminho/manifesto.json`. O manifesto precisa conter casos e arquivos de áudio existentes; aliases explícitos permitem comparar formas faladas e numéricas (como “lote sete” e “lote 7”) sem alterar a transcrição de referência. Marque cada caso com `matrix_tags`; o harness só recomenda vencedor depois de cobrir voz limpa/baixa, duração curta/longa, ruído, fala rápida, sotaques, números, animais e lotes. O exemplo não cobre áudio longo nem sotaques e não inclui gravações reais, que devem ser fornecidas e rotuladas por uma pessoa. O relatório não inclui áudio nem transcrição, apenas WER, recall de termos críticos, latência, erros, retries e custo estimado.
-
-Para preparar a futura rodada de fala rural, consulte [`FIELD_EVAL_V1`](docs/FIELD_EVAL_SPEC.md), o [protocolo de gravação](docs/FIELD_RECORDING_PROTOCOL.md), as [métricas](docs/FIELD_METRICS.md) e o [modelo de risco](docs/FIELD_RISK_MODEL.md). O corpus em `eval/field_eval_v1.jsonl` contém 150 casos **sintéticos**, não evidência de fala de campo. Valide-o sem credenciais com `agro-notes-field-eval validate`; o comando `agro-notes-field-eval demo` apenas demonstra as métricas em uma previsão deliberadamente errada e não valida modelo algum. Para pontuar previsões text-only, use `agro-notes-field-eval evaluate --predictions <arquivo.jsonl>`.
-
-Os smoke tests são `agro-notes-evaluate-groq`, `agro-notes-evaluate-stt`, `agro-notes-smoke-telegram` e `agro-notes-smoke-sheets` (valida o bootstrap e cria/lê/apaga uma aba temporária). O smoke do Telegram confere `getMe`, recusa webhook ou atualizações antigas pendentes e aguarda até 30 segundos por um código enviado de um chat privado por um usuário autorizado. Rode-o com o app parado para evitar conflito de polling; ele confirma o recebimento, responde ao chat e reconhece somente a atualização de desafio. Depois, inicie o app e valide `/start`, texto, voz e callbacks no E2E.
-
-A integração usa a [API OpenAI-compatible da Groq](https://console.groq.com/docs/openai), a [API Groq Speech to Text](https://console.groq.com/docs/speech-to-text), o conjunto documentado de [Structured Outputs](https://console.groq.com/docs/structured-outputs) e o [catálogo de modelos e preços](https://console.groq.com/docs/models). Logs de provider registram provider, modelo, latência, resultado, validade de schema, retries, request ID e uso/duração quando fornecidos, sem chave, prompt ou transcrição.
-
-## Limitações operacionais
-
-- A planilha precisa estar no schema esperado; bootstrap não migra dados existentes.
-- O cabeçalho `06_Eventos` inclui `time_source`. Antes de iniciar com uma planilha existente, insira uma coluna inteira nessa posição e defina o cabeçalho `time_source`; não renomeie uma coluna existente, pois isso deslocaria o significado dos dados históricos. Marque as linhas legadas como `UNKNOWN_LEGACY` (a origem não pode ser reconstruída com segurança). O bootstrap interrompe a inicialização diante de cabeçalhos incompatíveis.
-- Escritas em várias abas podem falhar parcialmente. O bot registra efeitos e exige reconciliação manual em vez de repetir automaticamente.
-- Botões de confirmação carregam um identificador de comando persistido e são vinculados à mensagem enviada, ao chat e ao usuário. Confirmações antigas deixam de valer quando o estado pendente é encerrado ou substituído.
-- A confirmação de ponta a ponta requer credenciais e uma planilha/bot reais; testes locais usam serviços simulados.
+<a href="https://opencollective.com/farmOS/sponsor/0/website" target="_blank"><img src="https://opencollective.com/farmOS/sponsor/0/avatar.svg"></a>
+<a href="https://opencollective.com/farmOS/sponsor/1/website" target="_blank"><img src="https://opencollective.com/farmOS/sponsor/1/avatar.svg"></a>
+<a href="https://opencollective.com/farmOS/sponsor/2/website" target="_blank"><img src="https://opencollective.com/farmOS/sponsor/2/avatar.svg"></a>
+<a href="https://opencollective.com/farmOS/sponsor/3/website" target="_blank"><img src="https://opencollective.com/farmOS/sponsor/3/avatar.svg"></a>
+<a href="https://opencollective.com/farmOS/sponsor/4/website" target="_blank"><img src="https://opencollective.com/farmOS/sponsor/4/avatar.svg"></a>
+<a href="https://opencollective.com/farmOS/sponsor/5/website" target="_blank"><img src="https://opencollective.com/farmOS/sponsor/5/avatar.svg"></a>
+<a href="https://opencollective.com/farmOS/sponsor/6/website" target="_blank"><img src="https://opencollective.com/farmOS/sponsor/6/avatar.svg"></a>
+<a href="https://opencollective.com/farmOS/sponsor/7/website" target="_blank"><img src="https://opencollective.com/farmOS/sponsor/7/avatar.svg"></a>
+<a href="https://opencollective.com/farmOS/sponsor/8/website" target="_blank"><img src="https://opencollective.com/farmOS/sponsor/8/avatar.svg"></a>
+<a href="https://opencollective.com/farmOS/sponsor/9/website" target="_blank"><img src="https://opencollective.com/farmOS/sponsor/9/avatar.svg"></a>
