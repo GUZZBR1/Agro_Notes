@@ -1,0 +1,33 @@
+.farm-map {
+  height: 400px;
+  resize: vertical;
+  overflow: hidden;
+  position: relative;
+}
+
+.farm-map__empty-state {
+  align-items: center;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  inset: 0;
+  justify-content: center;
+  padding: 2rem;
+  position: absolute;
+  text-align: center;
+  z-index: 1;
+}
+
+.farm-map__empty-state h2 {
+  margin-block: 0 0.5rem;
+}
+
+.farm-map__empty-state p {
+  margin: 0;
+  max-width: 36rem;
+}
+
+/* Inline labels cause the map to cover other fields. */
+.field--label-inline .farm-map {
+  clear: both;
+}

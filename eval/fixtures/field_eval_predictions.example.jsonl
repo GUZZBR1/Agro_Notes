@@ -1,1 +1,0 @@
-{"case_id":"FIELD_EVAL_V1_115","transcript":"A 184 pesou 712 kg hoje.","proposal":{"events":[{"event_type":"WEIGHING","time_expression":"hoje","correction_requested":false,"payload":{"animal_identifier":"184","weight_kg":712}}]},"decision":"AUTO_APPLY"}

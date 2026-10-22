@@ -1,0 +1,40 @@
+langcode: pt-br
+display:
+  default:
+    display_options:
+      title: Tarefas
+      fields:
+        plan_bulk_form:
+          action_title: Ação
+        status:
+          label: Situação
+        name:
+          label: Nome
+        type:
+          label: Tipo de tarefa
+      exposed_form:
+        options:
+          submit_button: Filtrar
+          reset_button_label: Limpar
+          exposed_sorts_label: Ordenar por
+          sort_asc_label: Crescente
+          sort_desc_label: Decrescente
+      empty:
+        area_text_custom:
+          content: Nenhuma tarefa encontrada.
+  block_active:
+    display_options:
+      title: Tarefas ativas
+    display_title: Tarefas ativas
+  page:
+    display_options:
+      title: Tarefas
+    display_title: Todas as tarefas
+  page_assigned_to:
+    display_options:
+      title: Tarefas atribuídas
+    display_title: Tarefas atribuídas
+  page_type:
+    display_options:
+      title: Tarefas
+    display_title: Tarefas por tipo

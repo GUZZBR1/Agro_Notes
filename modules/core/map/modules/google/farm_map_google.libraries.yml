@@ -1,0 +1,6 @@
+google:
+  js:
+    js/farmOS.map.behaviors.google.js: { }
+  dependencies:
+    - core/drupalSettings
+    - farm_map/farmOS-map

@@ -1,0 +1,5 @@
+name: farmOS Setup Test Modules
+description: 'Support module for farmOS setup modules form testing.'
+type: module
+package: farmOS Contrib
+core_version_requirement: ^11

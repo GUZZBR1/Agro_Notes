@@ -1,0 +1,7 @@
+name: farmOS Brazilian Portuguese
+description: Provides Brazilian Portuguese language configuration and local translations.
+type: module
+package: farmOS
+core_version_requirement: ^11
+dependencies:
+  - farm:farm_l10n

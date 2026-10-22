@@ -1,0 +1,4 @@
+getting_started:
+  css:
+    theme:
+      css/getting-started.css: {}

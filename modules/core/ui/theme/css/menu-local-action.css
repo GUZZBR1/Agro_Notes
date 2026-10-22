@@ -1,0 +1,4 @@
+/* Fix dropbutton margin in local actions block. */
+#block-gin-local-actions .dropbutton--multiple > .dropbutton__item:first-of-type {
+  margin-inline-end: var(--gin-spacing-xxl) !important;
+}

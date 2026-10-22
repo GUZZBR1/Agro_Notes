@@ -1,0 +1,2 @@
+farm.actions:
+  deriver: 'Drupal\farm_ui_action\Plugin\Derivative\FarmActions'
