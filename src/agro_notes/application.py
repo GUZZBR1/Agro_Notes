@@ -10,7 +10,6 @@ from typing import Any, Protocol
 from uuid import NAMESPACE_URL, uuid5
 from zoneinfo import ZoneInfo
 
-from .access_control import AccessService, normalize_code
 from .domain import (
     EventType,
     InterpretationProposal,
@@ -19,9 +18,8 @@ from .domain import (
     ValidationStatus,
 )
 from .exports import build_property_export, match_export_intent
-from .settings import Settings
+from .replies import ActionReply
 from .sheets import AmbiguousResolutionError
-from .telegram_bot import BotReply
 from .validation import DeterministicValidator
 
 logger = logging.getLogger(__name__)
@@ -60,24 +58,18 @@ class MVPProcessor:
 
     def __init__(
         self,
-        settings: Settings,
+        settings: Any,
         store: EventStore,
         interpreter: Interpreter,
         validator: DeterministicValidator | None = None,
-        access: AccessService | None = None,
-        drive_export: Any | None = None,
     ) -> None:
         self.settings = settings
         self.store = store
         self.interpreter = interpreter
         self.validator = validator or DeterministicValidator(settings.min_interpretation_confidence)
-        self.access = access
-        self.drive_export = drive_export
         self._writer_lock = asyncio.Lock()
 
     async def _authorized(self, user_id: int) -> bool:
-        if self.access is not None:
-            return await self.access.is_authorized(user_id)
         return user_id in self.settings.allowed_user_ids
 
     async def _store(self, method: str, *args: Any, **kwargs: Any) -> Any:
@@ -94,65 +86,33 @@ class MVPProcessor:
         device_timezone: str | None,
         source_reference: str | None,
         received_at: str | None = None,
-    ) -> BotReply:
+    ) -> ActionReply:
         if not await self._authorized(user_id):
-            return BotReply("Acesso não autorizado.")
+            return ActionReply("Acesso não autorizado.")
         export_intent = match_export_intent(text)
         if export_intent is not None:
-            if export_intent.destination == "drive" and (
-                self.drive_export is None or not getattr(self.drive_export, "configured", True)
-            ):
-                return BotReply("A exportação para Google Drive ainda não está configurada.")
             if not self.settings.farm_property_id.strip():
-                return BotReply("Não consegui identificar a fazenda autorizada para a exportação.")
+                return ActionReply("Não consegui identificar a fazenda autorizada para a exportação.")
             try:
                 async with self._writer_lock:
                     if not await self._authorized(user_id):
-                        return BotReply("Acesso não autorizado.")
+                        return ActionReply("Acesso não autorizado.")
                     document = await asyncio.to_thread(
                         build_property_export, self.store, self.settings.farm_property_id, export_intent.kind
                     )
             except Exception as exc:
                 logger.error("Export generation failed (%s)", type(exc).__name__)
-                return BotReply("Não foi possível gerar a planilha. Tente novamente.")
-            if export_intent.destination == "drive":
-                if self.drive_export is None:
-                    return BotReply("A exportação para Google Drive ainda não está configurada.")
-                try:
-                    uploaded = await asyncio.to_thread(self.drive_export.upload_for_user, user_id, document)
-                except Exception as exc:
-                    from .google_drive import DriveConfigurationError, DriveNotConnectedError, DriveUnavailableError
-
-                    if isinstance(exc, DriveNotConnectedError):
-                        return BotReply(
-                            "Sua conexão com o Google Drive precisa ser renovada. "
-                            "Use /conectar_drive e tente novamente."
-                        )
-                    if isinstance(exc, DriveUnavailableError):
-                        return BotReply(
-                            "O Google Drive está temporariamente indisponível. Tente novamente em instantes."
-                        )
-                    if isinstance(exc, DriveConfigurationError):
-                        return BotReply("A exportação para Google Drive ainda não está configurada.")
-                    logger.error("Google Drive export failed (%s)", type(exc).__name__)
-                    return BotReply("Não foi possível salvar a planilha no Google Drive. Tente novamente.")
-                link = uploaded.get("web_view_link")
-                suffix = f"\n{link}" if link else ""
-                return BotReply(f"Planilha salva no Google Drive em Agro Notes/Exportações.{suffix}")
-            return BotReply("Aqui está a planilha da fazenda.", document=document)
-        stripped = text.strip()
-        is_prefixed_code = stripped.upper().startswith("AGRO-") and normalize_code(stripped)
-        if is_prefixed_code or stripped.casefold().startswith("/acesso"):
-            return BotReply("Código de acesso não pode ser usado como registro.")
+                return ActionReply("Não foi possível gerar a planilha. Tente novamente.")
+            return ActionReply("Aqui está a planilha da fazenda.", document=document)
         received_at = received_at or datetime.now(UTC).isoformat()
         async with self._writer_lock:
             if not await self._authorized(user_id):
-                return BotReply("Acesso não autorizado.")
-            command_id = f"tg:{user_id}:{message_id}"
+                return ActionReply("Acesso não autorizado.")
+            command_id = f"LOCAL:{user_id}:{message_id}"
             previous = await self._store("find_event_by_command", command_id)
             if previous:
                 await self._record_duplicate(user_id, command_id, message_id, source, previous["event_id"])
-                return BotReply(self._duplicate_reply(previous))
+                return ActionReply(self._duplicate_reply(previous))
             duplicate_message = await self._conversation_by_message(message_id)
             if duplicate_message:
                 await self._record_duplicate(
@@ -163,7 +123,7 @@ class MVPProcessor:
                     if duplicate_message.get("state") == "WAITING_CONFIRMATION"
                     else None
                 )
-                return BotReply(str(duplicate_message.get("response") or "Comando já processado."), pending_id)
+                return ActionReply(str(duplicate_message.get("response") or "Comando já processado."), pending_id)
             if text.strip().lower().startswith("/historico"):
                 response = await self._history(user_id, text)
                 await self._record_conversation(
@@ -266,7 +226,7 @@ class MVPProcessor:
                 )
                 result = self.validator.validate(proposal, trusted)
                 if (
-                    clarification_context["voice_involved"]
+                    (clarification_context["voice_involved"] or source.casefold() == "local-json")
                     and result.status == ValidationStatus.READY
                     and any(event.event_type == EventType.WEIGHING for event in result.events)
                 ):
@@ -290,7 +250,7 @@ class MVPProcessor:
                         answer,
                         received_at=received_at,
                     )
-                    return BotReply(answer)
+                    return ActionReply(answer)
 
                 if result.status == ValidationStatus.NEEDS_CLARIFICATION:
                     manual_review = any("revisão manual" in question.lower() for question in result.questions)
@@ -318,7 +278,7 @@ class MVPProcessor:
                         missing_fields=result.missing_fields,
                         received_at=received_at,
                     )
-                    return BotReply(answer)
+                    return ActionReply(answer)
 
                 events, resolution_questions = await self._resolve_entities(result.events)
                 if resolution_questions:
@@ -347,7 +307,7 @@ class MVPProcessor:
                         missing_fields=resolution_questions,
                         received_at=received_at,
                     )
-                    return BotReply(answer)
+                    return ActionReply(answer)
 
                 if result.status == ValidationStatus.NEEDS_CONFIRMATION:
                     preview = self._preview(events)
@@ -366,7 +326,7 @@ class MVPProcessor:
                         pending={"events": [event.model_dump(mode="json") for event in events]},
                         received_at=received_at,
                     )
-                    return BotReply(preview, pending_id=command_id)
+                    return ActionReply(preview, pending_id=command_id)
 
                 response = await self._commit(
                     user_id,
@@ -394,11 +354,11 @@ class MVPProcessor:
                     events=events,
                     received_at=received_at,
                 )
-                return BotReply(response)
+                return ActionReply(response)
             except Exception as exc:
                 logger.error("MVP command processing failed command=%s (%s)", command_id, type(exc).__name__)
                 await self._safe_error_audit(user_id, command_id, message_id, source, text)
-                return BotReply(
+                return ActionReply(
                     "Não consegui concluir o registro. Nenhum sucesso foi confirmado; tente novamente ou use /cancel."
                 )
 
@@ -418,7 +378,7 @@ class MVPProcessor:
         async with self._writer_lock:
             if not await self._authorized(user_id):
                 return
-            command_id = f"tg:{user_id}:{message_id}"
+            command_id = f"LOCAL:{user_id}:{message_id}"
             if await self._conversation_by_message(message_id):
                 return
             row = {
@@ -492,7 +452,7 @@ class MVPProcessor:
         async with self._writer_lock:
             rows = await self._store("read_rows", "18_Conversas")
             prior = next((row for row in reversed(rows) if row.get("raw_text_ref") == message_id), None)
-            command_id = f"tg:{user_id}:{message_id}"
+            command_id = f"LOCAL:{user_id}:{message_id}"
             metadata = {
                 **queue_metadata,
                 "idempotency_key": command_id,
@@ -643,31 +603,31 @@ class MVPProcessor:
 
     async def confirm(
         self, user_id: int, pending_id: str, *, source_chat_id: int | None = None, source_message_id: int | None = None
-    ) -> BotReply:
+    ) -> ActionReply:
         if not await self._authorized(user_id):
-            return BotReply("Acesso não autorizado.")
+            return ActionReply("Acesso não autorizado.")
         async with self._writer_lock:
             if not await self._authorized(user_id):
-                return BotReply("Acesso não autorizado.")
+                return ActionReply("Acesso não autorizado.")
             row = await self._latest_conversation(pending_id)
             if not row or int(row.get("user_id", -1)) != user_id:
-                return BotReply("Confirmação expirada ou não encontrada.")
+                return ActionReply("Confirmação expirada ou não encontrada.")
             if source_chat_id is not None and str(row.get("callback_chat_id")) != str(source_chat_id):
-                return BotReply("Esta confirmação não pertence a esta conversa.")
+                return ActionReply("Esta confirmação não pertence a esta conversa.")
             if source_message_id is not None and str(row.get("callback_message_id")) != str(source_message_id):
-                return BotReply("Esta confirmação não pertence a esta mensagem.")
+                return ActionReply("Esta confirmação não pertence a esta mensagem.")
             latest_open = await self._latest_open_conversation_any_state(user_id)
             if not latest_open or latest_open.get("command_id") != pending_id:
-                return BotReply("Esta confirmação expirou; envie o comando novamente.")
+                return ActionReply("Esta confirmação expirou; envie o comando novamente.")
             if row.get("state") == "COMPLETED":
-                return BotReply("Esse comando já foi registrado.", remove_keyboard=True)
+                return ActionReply("Esse comando já foi registrado.", remove_keyboard=True)
             if row.get("state") != "WAITING_CONFIRMATION":
-                return BotReply("Esse comando não está aguardando confirmação.", remove_keyboard=True)
+                return ActionReply("Esse comando não está aguardando confirmação.", remove_keyboard=True)
             try:
                 payload = json.loads(row.get("pending_command_json") or "{}")
                 events = [ValidatedEvent.model_validate(event) for event in payload.get("events", [])]
                 if not events:
-                    return BotReply(
+                    return ActionReply(
                         "A prévia não contém eventos válidos. Envie a informação novamente.", remove_keyboard=True
                     )
                 response = await self._commit(
@@ -683,10 +643,10 @@ class MVPProcessor:
                 )
                 final_state = "COMPLETED" if response.startswith("✅") else "PARTIALLY_APPLIED"
                 await self._append_conversation_state(row, final_state, response)
-                return BotReply(response, remove_keyboard=True)
+                return ActionReply(response, remove_keyboard=True)
             except Exception:
                 logger.error("Confirmation failed command=%s", pending_id)
-                return BotReply(
+                return ActionReply(
                     "⚠️ O comando pode ter sido aplicado parcialmente. Não vou repetir automaticamente; "
                     "reconcilie o evento e seus efeitos na planilha antes de continuar.",
                     remove_keyboard=True,
@@ -694,27 +654,27 @@ class MVPProcessor:
 
     async def cancel(
         self, user_id: int, pending_id: str, *, source_chat_id: int | None = None, source_message_id: int | None = None
-    ) -> BotReply:
+    ) -> ActionReply:
         if not await self._authorized(user_id):
-            return BotReply("Acesso não autorizado.")
+            return ActionReply("Acesso não autorizado.")
         async with self._writer_lock:
             if not await self._authorized(user_id):
-                return BotReply("Acesso não autorizado.")
+                return ActionReply("Acesso não autorizado.")
             row = await self._latest_conversation(pending_id)
             if not row or int(row.get("user_id", -1)) != user_id:
-                return BotReply("Comando pendente não encontrado.")
+                return ActionReply("Comando pendente não encontrado.")
             if source_chat_id is not None and str(row.get("callback_chat_id")) != str(source_chat_id):
-                return BotReply("Esta confirmação não pertence a esta conversa.")
+                return ActionReply("Esta confirmação não pertence a esta conversa.")
             if source_message_id is not None and str(row.get("callback_message_id")) != str(source_message_id):
-                return BotReply("Esta confirmação não pertence a esta mensagem.")
+                return ActionReply("Esta confirmação não pertence a esta mensagem.")
             latest_open = await self._latest_open_conversation_any_state(user_id)
             if not latest_open or latest_open.get("command_id") != pending_id:
-                return BotReply("Esta confirmação expirou; envie o comando novamente.")
+                return ActionReply("Esta confirmação expirou; envie o comando novamente.")
             if row.get("state") != "WAITING_CONFIRMATION":
-                return BotReply("Esse comando não está aguardando confirmação.")
+                return ActionReply("Esse comando não está aguardando confirmação.")
             answer = "Registro cancelado. Nenhum evento foi gravado."
             await self._append_conversation_state(row, "CANCELLED", answer)
-            return BotReply(answer, remove_keyboard=True)
+            return ActionReply(answer, remove_keyboard=True)
 
     async def _try_resolve_animal(self, property_id: str, identifier: str) -> tuple[dict[str, Any] | None, bool]:
         try:
@@ -1471,7 +1431,7 @@ class MVPProcessor:
             "original_time_expression": event.original_time_expression,
             "recorded_at": datetime.now(UTC).isoformat(),
             "actor_id": str(user_id),
-            "channel": "TELEGRAM",
+            "channel": "LOCAL",
             "target_scope": (
                 "GROUP" if event.event_type == EventType.VACCINATION and event.payload.get("group_id") else "INDIVIDUAL"
             ),
@@ -1562,7 +1522,7 @@ class MVPProcessor:
                     "command_id": command_id,
                     "timestamp": datetime.now(UTC).isoformat(),
                     "actor": str(row.get("user_id", "")),
-                    "channel": row.get("channel", "TELEGRAM"),
+                    "channel": row.get("channel", "LOCAL"),
                     "raw_message_ref": row.get("raw_text_ref", ""),
                     "transcript_ref": row.get("audio_ref", ""),
                     "interpretation": row.get("entity_candidates", ""),
@@ -1663,8 +1623,6 @@ class MVPProcessor:
                     }
                 ],
             )
-        # Telegram_Access is the authority. Do not auto-create a trusted
-        # 19_Usuarios row here: an old active projection could revive revocation.
 
     def _trusted_context(
         self, user_id: int, command_id: str, captured_at: str, *, inferred_captured_at: str | None = None
@@ -1700,19 +1658,19 @@ class MVPProcessor:
             return set().union(*(cls._string_values(item) for item in value)) if value else set()
         return {value} if isinstance(value, str) else set()
 
-    async def _history(self, user_id: int, text: str) -> BotReply:
+    async def _history(self, user_id: int, text: str) -> ActionReply:
         parts = text.strip().split(maxsplit=1)
         if len(parts) != 2 or not parts[1].strip():
-            return BotReply("Use /historico <número do brinco>.")
+            return ActionReply("Use /historico <número do brinco>.")
         identifier = parts[1].strip()
         animal, ambiguous = await self._try_resolve_animal(self.settings.farm_property_id, identifier)
         if ambiguous:
-            return BotReply(
+            return ActionReply(
                 f"O identificador {identifier} corresponde a mais de um animal nesta fazenda. "
                 "Informe um identificador único."
             )
         if not animal:
-            return BotReply("Não encontrei esse animal nesta fazenda.")
+            return ActionReply("Não encontrei esse animal nesta fazenda.")
         event_rows = await self._store("read_rows", "06_Eventos")
         target_rows = await self._store("read_rows", "07_Evento_Animais")
         event_ids = {
@@ -1794,7 +1752,7 @@ class MVPProcessor:
         active = [row for event_id, row in latest_by_event.items() if event_id not in corrected_ids]
         events = sorted(active, key=lambda row: row.get("occurred_from", ""), reverse=True)[:10]
         if not events:
-            return BotReply(f"Ainda não há eventos registrados para {parts[1].strip()}.")
+            return ActionReply(f"Ainda não há eventos registrados para {parts[1].strip()}.")
         lines = [f"Histórico de {parts[1].strip()}:"]
         for event in events:
             fields = json.loads(event.get("event_payload_json") or "{}")
@@ -1809,14 +1767,14 @@ class MVPProcessor:
                 f"• {MVPProcessor._format_date(event.get('occurred_from'))} "
                 f"[{event.get('event_id', 'sem ID')}]{correction}: {description}{partial}"
             )
-        return BotReply("\n".join(lines))
+        return ActionReply("\n".join(lines))
 
-    async def _cancel_latest(self, user_id: int) -> BotReply:
+    async def _cancel_latest(self, user_id: int) -> ActionReply:
         row = await self._latest_open_conversation_any_state(user_id)
         if not row:
-            return BotReply("Você não tem nenhum comando aguardando esclarecimento ou confirmação.")
+            return ActionReply("Você não tem nenhum comando aguardando esclarecimento ou confirmação.")
         await self._append_conversation_state(row, "CANCELLED", "Registro cancelado pelo usuário.")
-        return BotReply("Registro cancelado. Nenhum evento será gravado.")
+        return ActionReply("Registro cancelado. Nenhum evento será gravado.")
 
     async def _safe_error_audit(self, user_id: int, command_id: str, message_id: str, source: str, text: str) -> None:
         try:
@@ -1861,7 +1819,7 @@ class MVPProcessor:
                         "command_id": command_id,
                         "timestamp": datetime.now(UTC).isoformat(),
                         "actor": row.get("actor_id", ""),
-                        "channel": row.get("channel", "TELEGRAM"),
+                        "channel": row.get("channel", "LOCAL"),
                         "raw_message_ref": row.get("source_message_id", ""),
                         "transcript_ref": "",
                         "interpretation": row.get("event_type", ""),

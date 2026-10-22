@@ -31,7 +31,6 @@ class ExportStore(Protocol):
 @dataclass(frozen=True)
 class ExportIntent:
     kind: str = "complete"
-    destination: str = "telegram"
 
 
 @dataclass(frozen=True)
@@ -76,10 +75,6 @@ def match_export_intent(text: str) -> ExportIntent | None:
         char for char in unicodedata.normalize("NFKD", text.casefold()) if not unicodedata.combining(char)
     )
     words = set(re.findall(r"[a-z0-9]+", normalized))
-    if "drive" in words and words & {"salva", "salvar", "salve", "guarda", "guardar", "guarde"}:
-        return ExportIntent(destination="drive")
-    if re.match(r"^\s*/salvar_drive(?:@[a-z0-9_]+)?(?:\s|$)", normalized):
-        return ExportIntent(destination="drive")
     if re.match(r"^\s*/(?:exportar|export|planilha)(?:@[a-z0-9_]+)?(?:\s|$)", normalized):
         return ExportIntent()
     export = bool(

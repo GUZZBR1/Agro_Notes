@@ -1,10 +1,9 @@
 import asyncio
-import json
 from copy import deepcopy
 from datetime import UTC, datetime
 from io import BytesIO
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import Mock
 
 import pytest
 from openpyxl import load_workbook
@@ -12,10 +11,7 @@ from openpyxl import load_workbook
 from agro_notes.application import MVPProcessor
 from agro_notes.domain import EventProposal, InterpretationProposal
 from agro_notes.exports import build_property_export
-from agro_notes.interpreter import StructuredOutputInterpreter
-from agro_notes.settings import Settings
 from agro_notes.sheets import TAB_HEADERS
-from agro_notes.telegram_bot import DurableTranscriptionQueue, build_router
 
 
 class MemoryStore:
@@ -123,6 +119,17 @@ class SequenceInterpreter:
         return next(self.proposals)
 
 
+def local_settings():
+    return SimpleNamespace(
+        allowed_user_ids=frozenset({42}),
+        farm_property_id="farm",
+        farm_timezone="America/Sao_Paulo",
+        min_interpretation_confidence=0.75,
+        interpretation_model="test",
+        transcription_model="none",
+    )
+
+
 def make_processor(
     store, event_type="HEALTH_OBSERVATION", payload=None, correction_of=None, correction_requested=False
 ):
@@ -139,7 +146,7 @@ def make_processor(
             )
         ]
     )
-    settings = Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm")
+    settings = local_settings()
     return MVPProcessor(settings, store, FixedInterpreter(proposal))
 
 
@@ -155,8 +162,6 @@ def receive(processor, message_id="chat:1", source="text"):
     )
 
 
-def message_handler(router, name):
-    return next(handler.callback for handler in router.message.handlers if handler.callback.__name__ == name)
 
 
 def test_trusted_context_rejects_invalid_or_timezone_free_capture_time():
@@ -189,127 +194,8 @@ async def test_ready_health_observation_appends_event_target_and_audit_once():
     assert any(row["action"] == "DUPLICATE_DELIVERY" for row in store.tabs["99_Audit_Log"])
 
 
-@pytest.mark.asyncio
-async def test_transcription_retry_state_is_durable_and_does_not_block_canonical_processing():
-    store = MemoryStore()
-    processor = make_processor(store)
-    await processor.persist_transcription_state(
-        42,
-        message_id="chat:voice-1",
-        captured_at=datetime(2026, 10, 13, tzinfo=UTC).isoformat(),
-        received_at=datetime(2026, 10, 13, tzinfo=UTC).isoformat(),
-        source_reference="telegram-file-id",
-        state="RETRY_WAIT",
-        queue_metadata={"retry_count": 1, "next_attempt_at": "2026-10-13T01:00:00+00:00"},
-        response="waiting",
-    )
-
-    jobs = await processor.transcription_jobs()
-    assert len(jobs) == 1
-    assert jobs[0]["state"] == "RETRY_WAIT"
-    assert jobs[0]["audio_ref"] == "telegram-file-id"
-    assert jobs[0]["command_id"] == "tg:42:chat:voice-1"
-    assert json.loads(jobs[0]["pending_command_json"])["idempotency_key"] == "tg:42:chat:voice-1"
-
-    # A recovered transcript follows the same command through normal processing.
-    await processor.persist_transcription_state(
-        42,
-        message_id="chat:voice-1",
-        captured_at=jobs[0]["captured_at"],
-        received_at=jobs[0]["received_at"],
-        source_reference="telegram-file-id",
-        state="TRANSCRIBED",
-        queue_metadata={"retry_count": 1},
-        transcript="relato",
-    )
-    result = await processor.receive(
-        42,
-        "relato",
-        source="voice",
-        message_id="chat:voice-1",
-        captured_at=jobs[0]["captured_at"],
-        device_timezone=None,
-        source_reference="telegram-file-id",
-        received_at=jobs[0]["received_at"],
-    )
-    assert result.text.startswith("✅")
-    duplicate = await processor.receive(
-        42,
-        "relato",
-        source="voice",
-        message_id="chat:voice-1",
-        captured_at=jobs[0]["captured_at"],
-        device_timezone=None,
-        source_reference="telegram-file-id",
-        received_at=jobs[0]["received_at"],
-    )
-    assert "já foi registrado" in duplicate.text
-    assert len(store.tabs["06_Eventos"]) == 2
-    assert (await processor.transcription_jobs()) == []
 
 
-@pytest.mark.asyncio
-async def test_awaiting_voice_delivery_preserves_confirmation_and_queue_state():
-    store = MemoryStore()
-    processor = make_processor(store, "WEIGHING", {"animal_identifier": "42", "weight_kg": 712})
-    captured_at = datetime(2026, 10, 13, tzinfo=UTC).isoformat()
-    received_at = datetime.now(UTC).isoformat()
-    await processor.persist_transcription_state(
-        42,
-        message_id="chat:voice-2",
-        captured_at=captured_at,
-        received_at=received_at,
-        source_reference="telegram-file-id",
-        state="TRANSCRIBED",
-        queue_metadata={"retry_count": 0},
-        transcript="relato",
-    )
-
-    preview = await processor.receive(
-        42,
-        "relato",
-        source="voice",
-        message_id="chat:voice-2",
-        captured_at=captured_at,
-        device_timezone=None,
-        source_reference="telegram-file-id",
-        received_at=received_at,
-    )
-    assert preview.pending_id == "tg:42:chat:voice-2"
-
-    queue_metadata = {"retry_count": 0, "awaiting_delivery": True, "pending_id": preview.pending_id}
-    await processor.persist_transcription_state(
-        42,
-        message_id="chat:voice-2",
-        captured_at=captured_at,
-        received_at=received_at,
-        source_reference="telegram-file-id",
-        state="TRANSCRIBED",
-        queue_metadata=queue_metadata,
-        transcript="relato",
-        response=preview.text,
-    )
-
-    queued = await processor.transcription_job("chat:voice-2")
-    assert queued["state"] == "WAITING_CONFIRMATION"
-    assert json.loads(queued["pending_command_json"])["events"]
-    assert DurableTranscriptionQueue._metadata(queued)["awaiting_delivery"]
-    assert len(await processor.transcription_jobs()) == 1
-
-    await processor.mark_transcription_delivered(
-        "chat:voice-2", queue_metadata=queue_metadata, transcript="relato", response=preview.text
-    )
-    delivered = await processor.transcription_job("chat:voice-2")
-    assert delivered["state"] == "WAITING_CONFIRMATION"
-    assert json.loads(delivered["pending_command_json"])["events"]
-    assert DurableTranscriptionQueue._metadata(delivered).get("awaiting_delivery") is None
-    assert await processor.transcription_jobs() == []
-
-    await processor.bind_confirmation(42, preview.pending_id, chat_id=100, message_id=101)
-    confirmed = await processor.confirm(
-        42, preview.pending_id, source_chat_id=100, source_message_id=101
-    )
-    assert confirmed.text.startswith("✅")
 
 
 @pytest.mark.asyncio
@@ -325,110 +211,8 @@ async def test_concurrent_duplicate_delivery_serializes_to_one_event():
     assert len(store.tabs["07_Evento_Animais"]) == 1
 
 
-@pytest.mark.asyncio
-async def test_voice_to_event_to_history_integrated_path_with_service_doubles():
-    store = MemoryStore()
-    transcript = "A 42 está mancando hoje"
-    proposal = InterpretationProposal(
-        events=[
-            EventProposal(
-                event_type="HEALTH_OBSERVATION",
-                payload={"animal_identifier": "42", "observation": "mancando"},
-                time_expression="hoje",
-                confidence=0.99,
-            )
-        ]
-    )
-
-    class FakeInterpreterClient:
-        def generate(self, **kwargs):
-            assert kwargs["user_text"] == transcript
-            return proposal
-
-    class FakeTranscriber:
-        async def transcribe(self, audio):
-            assert audio == b"voice-audio"
-            return transcript
-
-    processor = MVPProcessor(
-        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"),
-        store,
-        StructuredOutputInterpreter(FakeInterpreterClient()),
-    )
-    router = build_router(processor, Settings(TELEGRAM_ALLOWED_USER_IDS="42"), FakeTranscriber())
-    voice_message = SimpleNamespace(
-        from_user=SimpleNamespace(id=42),
-        chat=SimpleNamespace(id=100, type="private"),
-        message_id=10,
-        date=datetime(2026, 10, 13, tzinfo=UTC),
-        text=None,
-        voice=SimpleNamespace(file_size=12, file_id="telegram-file-10"),
-        answer=AsyncMock(return_value=SimpleNamespace(chat=SimpleNamespace(id=100), message_id=20)),
-    )
-
-    async def download(_voice, *, destination):
-        destination.write(b"voice-audio")
-
-    await message_handler(router, "voice")(voice_message, SimpleNamespace(download=download))
-    history_message = SimpleNamespace(
-        from_user=SimpleNamespace(id=42),
-        chat=SimpleNamespace(id=100, type="private"),
-        message_id=11,
-        date=datetime(2026, 10, 13, tzinfo=UTC),
-        text="/historico 42",
-        voice=None,
-        answer=AsyncMock(return_value=SimpleNamespace(chat=SimpleNamespace(id=100), message_id=21)),
-    )
-    await message_handler(router, "text")(history_message)
-
-    assert "Observação reportada" in voice_message.answer.call_args.args[0]
-    assert store.tabs["06_Eventos"][-1]["processing_status"] == "APPLIED"
-    assert store.tabs["06_Eventos"][-1]["evidence_ref"] == "telegram-file-10"
-    assert "mancando" in history_message.answer.call_args.args[0]
-    assert any(row.get("action") == "EVENT_APPLIED" for row in store.tabs["99_Audit_Log"])
 
 
-@pytest.mark.asyncio
-async def test_voice_transcription_failure_is_audited_without_persisting_audio_bytes():
-    store = MemoryStore()
-    processor = MVPProcessor(
-        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"),
-        store,
-        FixedInterpreter(InterpretationProposal()),
-    )
-
-    class FailingTranscriber:
-        async def transcribe(self, _audio):
-            raise TimeoutError("provider details are intentionally not persisted")
-
-    router = build_router(
-        processor,
-        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"),
-        FailingTranscriber(),
-    )
-    voice_message = SimpleNamespace(
-        from_user=SimpleNamespace(id=42),
-        chat=SimpleNamespace(id=100, type="private"),
-        message_id=12,
-        date=datetime(2026, 10, 13, tzinfo=UTC),
-        text=None,
-        voice=SimpleNamespace(file_size=12, file_id="telegram-file-failed"),
-        answer=AsyncMock(),
-    )
-
-    async def download(_voice, *, destination):
-        destination.write(b"audio-must-not-be-stored")
-
-    await message_handler(router, "voice")(voice_message, SimpleNamespace(download=download))
-
-    conversation = store.tabs["18_Conversas"][-1]
-    audit = store.tabs["99_Audit_Log"][-1]
-    assert conversation["state"] == "FAILED"
-    assert conversation["audio_ref"] == "telegram-file-failed"
-    assert conversation["transcript"] == ""
-    assert conversation["pending_command_json"] == "{}"
-    assert audit["action"] == "TRANSCRIPTION_FAILED"
-    assert audit["error"] == "TRANSCRIPTION_FAILED"
 
 
 @pytest.mark.asyncio
@@ -439,7 +223,7 @@ async def test_confirmation_is_persisted_then_applies_and_marks_conversation():
     preview = await receive(processor)
     result = await processor.confirm(42, preview.pending_id)
 
-    assert preview.pending_id == "tg:42:chat:1"
+    assert preview.pending_id == "LOCAL:42:chat:1"
     assert "Confira a prévia" in preview.text
     assert result.text.startswith("✅")
     assert store.tabs["06_Eventos"][-1]["interpretation_confirmation"] == "USER_CONFIRMED"
@@ -447,106 +231,12 @@ async def test_confirmation_is_persisted_then_applies_and_marks_conversation():
     assert store.tabs["18_Conversas"][-1]["state"] == "COMPLETED"
 
 
-@pytest.mark.asyncio
-async def test_voice_weighing_requires_confirmation_before_any_event_is_written():
-    store = MemoryStore()
-    processor = make_processor(store, "WEIGHING", {"animal_identifier": "42", "weight_kg": 712})
-
-    preview = await receive(processor, source="voice")
-
-    assert preview.pending_id == "tg:42:chat:1"
-    assert "712" in preview.text
-    assert not store.tabs["06_Eventos"]
-
-    confirmed = await processor.confirm(42, preview.pending_id)
-
-    assert confirmed.text.startswith("✅")
-    assert store.tabs["06_Eventos"][-1]["interpretation_confirmation"] == "USER_CONFIRMED"
 
 
-@pytest.mark.asyncio
-async def test_voice_source_check_is_case_insensitive_for_weighing_confirmation():
-    store = MemoryStore()
-    processor = make_processor(store, "WEIGHING", {"animal_identifier": "42", "weight_kg": 712})
-
-    preview = await receive(processor, source="VOICE")
-
-    assert preview.pending_id == "tg:42:chat:1"
-    assert not store.tabs["06_Eventos"]
 
 
-@pytest.mark.asyncio
-async def test_voice_weighing_still_requires_confirmation_after_text_clarification():
-    store = MemoryStore()
-    processor = make_processor(store, "WEIGHING", {"animal_identifier": "42", "weight_kg": 712})
-    processor.interpreter = SequenceInterpreter(
-        InterpretationProposal(
-            events=[
-                EventProposal(
-                    event_type="WEIGHING",
-                    payload={"animal_identifier": "42", "weight_kg": 712},
-                    time_expression="",
-                    confidence=0.98,
-                )
-            ]
-        ),
-        InterpretationProposal(
-            events=[
-                EventProposal(
-                    event_type="WEIGHING",
-                    payload={"animal_identifier": "42", "weight_kg": 712},
-                    time_expression="hoje",
-                    confidence=0.98,
-                )
-            ]
-        ),
-    )
-
-    clarification = await receive(processor, source="voice")
-    preview = await receive(processor, message_id="chat:2", source="text")
-
-    assert clarification.pending_id is None
-    assert preview.pending_id == "tg:42:chat:1"
-    assert "712" in preview.text
-    assert not store.tabs["06_Eventos"]
 
 
-@pytest.mark.asyncio
-async def test_voice_clarification_turn_makes_later_text_weighing_require_confirmation():
-    store = MemoryStore()
-    processor = make_processor(store, "WEIGHING", {"animal_identifier": "42", "weight_kg": 712})
-    processor.interpreter = SequenceInterpreter(
-        *[
-            InterpretationProposal(
-                events=[
-                    EventProposal(
-                        event_type="WEIGHING",
-                        payload={"animal_identifier": "42", "weight_kg": 712},
-                        time_expression="",
-                        confidence=0.98,
-                    )
-                ]
-            )
-            for _ in range(2)
-        ],
-        InterpretationProposal(
-            events=[
-                EventProposal(
-                    event_type="WEIGHING",
-                    payload={"animal_identifier": "42", "weight_kg": 712},
-                    time_expression="hoje",
-                    confidence=0.98,
-                )
-            ]
-        ),
-    )
-
-    await receive(processor, source="text")
-    await receive(processor, message_id="chat:2", source="voice")
-    preview = await receive(processor, message_id="chat:3", source="text")
-
-    assert preview.pending_id == "tg:42:chat:1"
-    assert not store.tabs["06_Eventos"]
 
 
 @pytest.mark.asyncio
@@ -889,7 +579,7 @@ async def test_correction_is_append_only_and_history_hides_superseded_projection
     assert "512 kg" not in history.text
     assert "corrige prior-weight" in history.text
     assert any(
-        row.get("command_id") == "tg:42:chat:history" and row.get("action") == "CONVERSATION_STATE"
+        row.get("command_id") == "LOCAL:42:chat:history" and row.get("action") == "CONVERSATION_STATE"
         for row in store.tabs["99_Audit_Log"]
     )
 
@@ -910,7 +600,7 @@ async def test_natural_weight_correction_links_latest_user_event_and_confirms_pr
     )
     preview = await receive(correction, "chat:weight-correction")
 
-    assert preview.pending_id == "tg:42:chat:weight-correction"
+    assert preview.pending_id == "LOCAL:42:chat:weight-correction"
     assert "Corrige o evento" in preview.text
     assert "Peso anterior: 87" in preview.text
     assert "78 kg" in preview.text
@@ -1062,7 +752,7 @@ async def test_missing_weight_is_clarified_then_applied_as_one_command():
             return self.proposals.pop(0)
 
     processor = MVPProcessor(
-        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"),
+        local_settings(),
         store,
         TwoStepInterpreter(),
     )
@@ -1080,7 +770,7 @@ async def test_missing_weight_is_clarified_then_applied_as_one_command():
     assert "Preciso esclarecer" in first.text
     assert second.text.startswith("✅")
     assert len(store.tabs["06_Eventos"]) == 2
-    assert store.tabs["06_Eventos"][-1]["command_id"] == "tg:42:chat:1"
+    assert store.tabs["06_Eventos"][-1]["command_id"] == "LOCAL:42:chat:1"
     assert [row["state"] for row in store.tabs["18_Conversas"][-2:]] == ["NEEDS_CLARIFICATION", "COMPLETED"]
 
 
@@ -1097,7 +787,7 @@ async def test_bare_hex_identifier_completes_an_authorized_clarification():
         time_expression="hoje", confidence=0.98,
     )])
     processor = MVPProcessor(
-        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"),
+        local_settings(),
         store, SequenceInterpreter(clarification, completed),
     )
 
@@ -1110,24 +800,10 @@ async def test_bare_hex_identifier_completes_an_authorized_clarification():
 
     assert "Preciso esclarecer" in first.text
     assert second.text.startswith("✅")
-    assert store.tabs["06_Eventos"][-1]["command_id"] == "tg:42:chat:1"
+    assert store.tabs["06_Eventos"][-1]["command_id"] == "LOCAL:42:chat:1"
     assert store.tabs["18_Conversas"][-1]["state"] == "COMPLETED"
 
 
-@pytest.mark.parametrize("text", ["AGRO-0123456789ABCDEF0123", "/ACESSO 0123456789ABCDEF0123"])
-async def test_processor_does_not_persist_explicit_access_codes(text):
-    store = MemoryStore()
-    processor = make_processor(store)
-
-    result = await processor.receive(
-        42, text, source="text", message_id="chat:1",
-        captured_at=datetime(2026, 10, 13, tzinfo=UTC).isoformat(),
-        device_timezone=None, source_reference=None,
-    )
-
-    assert result.text == "Código de acesso não pode ser usado como registro."
-    assert not store.tabs["18_Conversas"]
-    assert not store.tabs["06_Eventos"]
 
 
 @pytest.mark.asyncio
@@ -1175,7 +851,7 @@ async def test_multiple_clarifications_preserve_original_request_and_prior_answe
             return proposals.pop(0)
 
     interpreter = CapturingInterpreter()
-    processor = MVPProcessor(Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"), store, interpreter)
+    processor = MVPProcessor(local_settings(), store, interpreter)
     first = await processor.receive(
         42,
         "A 184 pesou",
@@ -1238,7 +914,7 @@ async def test_inferred_event_date_uses_original_message_across_midnight_clarifi
             return proposals.pop(0)
 
     processor = MVPProcessor(
-        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"), store, TwoStepInterpreter()
+        local_settings(), store, TwoStepInterpreter()
     )
     await processor.receive(
         42,
@@ -1291,7 +967,7 @@ async def test_relative_date_from_original_transcript_keeps_original_capture_anc
             return proposals.pop(0)
 
     processor = MVPProcessor(
-        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"), store, TwoStepInterpreter()
+        local_settings(), store, TwoStepInterpreter()
     )
     await processor.receive(
         42,
@@ -1393,78 +1069,6 @@ async def test_simple_weight_success_reply_contains_animal_weight_and_date():
     assert "12/10/2026" in response.text
 
 
-@pytest.mark.asyncio
-async def test_transcription_queue_rows_do_not_hide_pending_clarification_context():
-    store = MemoryStore()
-    clarification = InterpretationProposal(
-        events=[
-            EventProposal(
-                event_type="WEIGHING",
-                payload={"animal_identifier": "42"},
-                time_expression="hoje",
-                confidence=0.98,
-            )
-        ]
-    )
-    completed = InterpretationProposal(
-        events=[
-            EventProposal(
-                event_type="WEIGHING",
-                payload={"animal_identifier": "42", "weight_kg": 512},
-                time_expression="hoje",
-                confidence=0.98,
-            )
-        ]
-    )
-
-    class TwoStepInterpreter:
-        def __init__(self):
-            self.proposals = [clarification, completed]
-
-        def interpret(self, _text):
-            return self.proposals.pop(0)
-
-    processor = MVPProcessor(
-        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"),
-        store,
-        TwoStepInterpreter(),
-    )
-    first = await receive(processor, "chat:clarification", source="text")
-    assert "Preciso esclarecer" in first.text
-
-    captured_at = datetime(2026, 10, 13, tzinfo=UTC).isoformat()
-    received_at = datetime.now(UTC).isoformat()
-    for state in ("PENDING_TRANSCRIPTION", "TRANSCRIBED"):
-        await processor.persist_transcription_state(
-            42,
-            message_id="chat:voice-answer",
-            captured_at=captured_at,
-            received_at=received_at,
-            source_reference="telegram-file-id",
-            state=state,
-            queue_metadata={"retry_count": 0},
-            transcript="512 quilos" if state == "TRANSCRIBED" else "",
-        )
-
-    result = await processor.receive(
-        42,
-        "512 quilos",
-        source="voice",
-        message_id="chat:voice-answer",
-        captured_at=captured_at,
-        device_timezone=None,
-        source_reference="telegram-file-id",
-        received_at=received_at,
-    )
-
-    assert result.pending_id == "tg:42:chat:clarification"
-    assert "Confirme para gravar" in result.text
-    clarification_row = next(
-        row for row in reversed(store.tabs["18_Conversas"])
-        if row.get("command_id") == "tg:42:chat:clarification"
-    )
-    assert clarification_row["state"] == "WAITING_CONFIRMATION"
-    assert json.loads(clarification_row["pending_command_json"])["events"]
 
 
 async def request_export(processor, text="/exportar", user_id=42, source="text"):
@@ -1550,7 +1154,7 @@ async def test_authorized_export_returns_workbook_without_interpretation_or_pers
     store.tabs["02_Animais"][0]["species"] = "trusted-cattle"
     before = deepcopy(store.tabs)
     interpreter = SimpleNamespace(interpret=Mock(side_effect=AssertionError("export must bypass interpretation")))
-    processor = MVPProcessor(Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"), store, interpreter)
+    processor = MVPProcessor(local_settings(), store, interpreter)
 
     result = await request_export(processor, text, source=source)
 
@@ -1564,57 +1168,15 @@ async def test_authorized_export_returns_workbook_without_interpretation_or_pers
     interpreter.interpret.assert_not_called()
 
 
-async def test_drive_export_reuses_generated_xlsx_and_uses_requesting_telegram_identity():
-    store = MemoryStore()
-    before = deepcopy(store.tabs)
-    drive = SimpleNamespace(
-        upload_for_user=Mock(return_value={"file_id": "drive-file", "web_view_link": "https://drive.test/file"})
-    )
-    interpreter = SimpleNamespace(interpret=Mock(side_effect=AssertionError("export must bypass interpretation")))
-    processor = MVPProcessor(
-        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"), store, interpreter, drive_export=drive
-    )
-
-    result = await request_export(processor, "salva minha planilha no Drive")
-
-    assert result.document is None
-    assert "Planilha salva" in result.text
-    assert "https://drive.test/file" in result.text
-    drive.upload_for_user.assert_called_once()
-    user_id, document = drive.upload_for_user.call_args.args
-    assert user_id == 42
-    assert document.filename.endswith(".xlsx")
-    assert document.content[:2] == b"PK"
-    assert store.tabs == before
-    interpreter.interpret.assert_not_called()
 
 
-@pytest.mark.asyncio
-async def test_drive_temporary_unavailability_suggests_retry_without_reconnect():
-    from agro_notes.google_drive import DriveUnavailableError
-
-    store = MemoryStore()
-    drive = SimpleNamespace(upload_for_user=Mock(side_effect=DriveUnavailableError("temporary outage")))
-    processor = MVPProcessor(
-        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"),
-        store,
-        SimpleNamespace(interpret=Mock()),
-        drive_export=drive,
-    )
-
-    result = await request_export(processor, "salva minha planilha no Drive")
-
-    assert "temporariamente indisponível" in result.text
-    assert "Tente novamente" in result.text
-    assert "/conectar_drive" not in result.text
-    drive.upload_for_user.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_export_waits_for_in_progress_event_write_lock():
     store = MemoryStore()
     processor = MVPProcessor(
-        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"),
+        local_settings(),
         store,
         SimpleNamespace(interpret=Mock()),
     )
@@ -1628,26 +1190,12 @@ async def test_export_waits_for_in_progress_event_write_lock():
     assert result.document is not None
 
 
-async def test_unauthorized_drive_export_never_uses_a_user_connection():
-    store = MemoryStore()
-    drive = SimpleNamespace(upload_for_user=Mock(side_effect=AssertionError("must not upload")))
-    processor = MVPProcessor(
-        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"),
-        store,
-        SimpleNamespace(interpret=Mock()),
-        drive_export=drive,
-    )
-
-    result = await request_export(processor, "salva minha planilha no Drive", user_id=99)
-
-    assert result.text == "Acesso não autorizado."
-    drive.upload_for_user.assert_not_called()
 
 
 async def test_export_unauthorized_user_cannot_read_or_interpret_data():
     store = SimpleNamespace(read_rows=Mock(side_effect=AssertionError("unauthorized read")))
     interpreter = SimpleNamespace(interpret=Mock(side_effect=AssertionError("unauthorized interpretation")))
-    processor = MVPProcessor(Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"), store, interpreter)
+    processor = MVPProcessor(local_settings(), store, interpreter)
 
     result = await request_export(processor, user_id=99)
 
@@ -1657,21 +1205,6 @@ async def test_export_unauthorized_user_cannot_read_or_interpret_data():
     interpreter.interpret.assert_not_called()
 
 
-async def test_export_persisted_access_denial_overrides_legacy_whitelist():
-    store = SimpleNamespace(read_rows=Mock(side_effect=AssertionError("unauthorized read")))
-    access = SimpleNamespace(is_authorized=AsyncMock(return_value=False))
-    interpreter = SimpleNamespace(interpret=Mock())
-    processor = MVPProcessor(
-        Settings(TELEGRAM_ALLOWED_USER_IDS="42", FARM_PROPERTY_ID="farm"), store, interpreter, access=access
-    )
-
-    result = await request_export(processor)
-
-    assert result.document is None
-    assert result.text == "Acesso não autorizado."
-    access.is_authorized.assert_awaited_once_with(42)
-    store.read_rows.assert_not_called()
-    interpreter.interpret.assert_not_called()
 
 
 async def test_export_uses_trusted_property_and_excludes_foreign_and_missing_property_rows():

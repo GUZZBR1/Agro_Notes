@@ -1,7 +1,7 @@
 """Opt-in evaluation of available production Groq models on synthetic prompts.
 
-This tool sends only the checked-in synthetic fixture text to Groq. It does not
-write to Telegram, Google Sheets, or persistent storage.
+This tool sends only the checked-in synthetic fixture text to Groq. It reads
+available model metadata and does not write to persistent storage.
 """
 
 from __future__ import annotations

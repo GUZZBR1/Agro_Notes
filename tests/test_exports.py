@@ -14,7 +14,7 @@ class ExportStore:
 
     def read_rows(self, tab):
         self.reads.append(tab)
-        assert tab not in {"18_Conversas", "19_Usuarios", "20_Event_Effects", "99_Audit_Log", "Telegram_Access"}
+        assert tab not in {"18_Conversas", "19_Usuarios", "20_Event_Effects", "99_Audit_Log"}
         return self.tabs.get(tab, [])
 
 
